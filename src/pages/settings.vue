@@ -3,6 +3,7 @@ import type { Language } from '@/lib/config'
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ThemeSwitch from '@/components/ThemeSwitch.vue'
+import { Button } from '@/components/ui/button'
 
 import { Label } from '@/components/ui/label'
 import {
@@ -31,6 +32,10 @@ function handleLanguageSelect(newLocale: string) {
   if (!newLocale || !availableLanguages.value.some(sl => sl.value === newLocale))
     return
   settingsStore.setSetting<string>('language', newLocale)
+}
+
+async function clearDrafts() {
+  await settingsStore.removeSettingsByPrefix('draft.')
 }
 </script>
 
@@ -68,6 +73,19 @@ function handleLanguageSelect(newLocale: string) {
             </SelectGroup>
           </SelectContent>
         </Select>
+      </div>
+      <div class="flex items-center justify-between gap-4 border-t border-border pt-6">
+        <div>
+          <div class="font-medium">
+            {{ t('settings.drafts.label') }}
+          </div>
+          <div class="text-sm text-muted-foreground">
+            {{ t('settings.drafts.description') }}
+          </div>
+        </div>
+        <Button variant="outline" @click="clearDrafts">
+          {{ t('settings.drafts.clear') }}
+        </Button>
       </div>
     </div>
   </div>

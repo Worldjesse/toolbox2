@@ -2,7 +2,22 @@
   "home": {
     "label": "Inicio",
     "title": "Mi caja de herramientas",
-    "subtitle": "Utilidades locales con Tauri + Vue."
+    "subtitle": "Utilidades locales con Tauri + Vue.",
+    "favorites": "Favoritos",
+    "recent": "Usados recientemente"
+  },
+  "command": {
+    "title": "Buscar herramienta",
+    "placeholder": "Buscar herramientas...",
+    "empty": "No hay herramientas coincidentes"
+  },
+  "categories": {
+    "network": "Red",
+    "data": "Datos",
+    "encoding": "Codificación",
+    "text": "Texto",
+    "file": "Archivos",
+    "generator": "Generadores"
   },
   "tools": {
     "json": "JSON",
@@ -18,7 +33,33 @@
     "file": "Archivo",
     "fileDesc": "Leer texto y calcular hash",
     "http": "API Client",
-    "httpDesc": "Depurador HTTP estilo Postman"
+    "httpDesc": "Depurador HTTP estilo Postman",
+    "jwt": "JWT",
+    "jwtDesc": "Decodificar y verificar firmas HMAC",
+    "url": "URL",
+    "urlDesc": "Analizar, codificar y decodificar URL",
+    "hash": "Hash / HMAC",
+    "hashDesc": "Calcular MD5, SHA y HMAC",
+    "regex": "Expresión regular",
+    "regexDesc": "Probar coincidencias y reemplazos",
+    "diff": "Diff de texto",
+    "diffDesc": "Comparar texto por líneas o caracteres",
+    "convert": "Conversor de datos",
+    "convertDesc": "Convertir JSON, YAML, TOML, XML y CSV",
+    "cron": "Cron",
+    "cronDesc": "Validar expresiones y próximas ejecuciones",
+    "sql": "SQL",
+    "sqlDesc": "Formatear y comprimir SQL",
+    "network": "Diagnóstico de red",
+    "networkDesc": "DNS, puertos TCP y cálculo CIDR",
+    "batchFile": "Archivos por lotes",
+    "batchFileDesc": "Hash, inspección, duplicados y renombrado",
+    "image": "Imágenes",
+    "imageDesc": "Inspeccionar, comprimir y convertir imágenes",
+    "qr": "Código QR",
+    "qrDesc": "Generar y escanear códigos QR",
+    "clipboard": "Detector del portapapeles",
+    "clipboardDesc": "Detectar contenido y sugerir herramientas"
   },
   "languages": {
     "label": "Idiomas"
@@ -26,6 +67,11 @@
   "settings": {
     "label": "Ajustes",
     "description": "Administra la configuración de la aplicación aquí.",
+    "drafts": {
+      "label": "Borradores",
+      "description": "Borra las entradas no sensibles guardadas automáticamente.",
+      "clear": "Borrar borradores"
+    },
     "theme": {
       "label": "Tema",
       "description": "Elige el tema de la aplicación.",

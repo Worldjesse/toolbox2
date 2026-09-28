@@ -40,7 +40,7 @@ export default {
     target:
       process.env.TAURI_ENV_PLATFORM == 'windows'
         ? 'chrome105'
-        : 'safari13',
+        : 'safari14',
     // don't minify for debug builds
     minify: !process.env.TAURI_ENV_DEBUG ? 'oxc' : false,
     // produce sourcemaps for debug builds

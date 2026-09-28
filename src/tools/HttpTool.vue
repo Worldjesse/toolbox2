@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { computed, ref } from 'vue'
 import ToolShell from '@/components/ToolShell.vue'
 import { Button } from '@/components/ui/button'
+import { useToolDraft } from '@/composables/useToolDraft'
 
-type Kv = { key: string; value: string; enabled: boolean }
+interface Kv { key: string, value: string, enabled: boolean }
 type BodyType = 'none' | 'json' | 'text' | 'form'
 type ReqTab = 'params' | 'headers' | 'body'
 type ResTab = 'body' | 'headers'
@@ -54,7 +55,7 @@ const COMMON_HEADER_NAMES = [
 
 /** Common values keyed by header name (case-insensitive) */
 const COMMON_HEADER_VALUES: Record<string, string[]> = {
-  accept: [
+  'accept': [
     'application/json',
     'application/xml',
     'text/plain',
@@ -69,7 +70,7 @@ const COMMON_HEADER_VALUES: Record<string, string[]> = {
     'text/plain',
     'text/xml',
   ],
-  authorization: [
+  'authorization': [
     'Bearer ',
     'Basic ',
     'Token ',
@@ -79,7 +80,7 @@ const COMMON_HEADER_VALUES: Record<string, string[]> = {
     'no-store',
     'max-age=0',
   ],
-  connection: [
+  'connection': [
     'keep-alive',
     'close',
   ],
@@ -105,15 +106,13 @@ function headerValueSuggestions(headerName: string): string[] {
   return COMMON_HEADER_VALUES[key] ?? []
 }
 
-
-
-const method = ref<(typeof methods)[number]>('GET')
+const method = useToolDraft<(typeof methods)[number]>('http', 'method', 'GET')
 const url = ref('https://httpbin.org/get')
-const reqTab = ref<ReqTab>('params')
-const resTab = ref<ResTab>('body')
-const bodyType = ref<BodyType>('none')
+const reqTab = useToolDraft<ReqTab>('http', 'requestTab', 'params')
+const resTab = useToolDraft<ResTab>('http', 'responseTab', 'body')
+const bodyType = useToolDraft<BodyType>('http', 'bodyType', 'none')
 const body = ref('')
-const timeoutMs = ref(30000)
+const timeoutMs = useToolDraft('http', 'timeoutMs', 30000)
 const loading = ref(false)
 const error = ref('')
 const response = ref<HttpResponse | null>(null)
@@ -124,7 +123,7 @@ const headers = ref<Kv[]>([
   { key: '', value: '', enabled: true },
 ])
 
-const history = ref<Array<{ method: string; url: string; status: number; at: number }>>([])
+const history = ref<Array<{ method: string, url: string, status: number, at: number }>>([])
 
 function emptyKv(): Kv {
   return { key: '', value: '', enabled: true }
@@ -298,7 +297,7 @@ async function copyResponse() {
     await navigator.clipboard.writeText(response.value.body)
 }
 
-function loadHistory(item: { method: string; url: string }) {
+function loadHistory(item: { method: string, url: string }) {
   method.value = item.method as typeof method.value
   url.value = item.url
 }
@@ -418,12 +417,12 @@ function prettyBody() {
                 >
                 <input
                   v-model="row.value"
-                  :list="'http-header-values-' + idx"
+                  :list="`http-header-values-${idx}`"
                   placeholder="Value（可搜索）"
                   autocomplete="off"
                   class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
                 >
-                <datalist :id="'http-header-values-' + idx">
+                <datalist :id="`http-header-values-${idx}`">
                   <option
                     v-for="v in headerValueSuggestions(row.key)"
                     :key="v"

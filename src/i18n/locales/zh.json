@@ -2,7 +2,22 @@
   "home": {
     "label": "首页",
     "title": "我的工具箱",
-    "subtitle": "基于 Tauri + Vue 的本地开发小工具集合。"
+    "subtitle": "基于 Tauri + Vue 的本地开发小工具集合。",
+    "favorites": "收藏",
+    "recent": "最近使用"
+  },
+  "command": {
+    "title": "查找工具",
+    "placeholder": "搜索工具...",
+    "empty": "没有匹配的工具"
+  },
+  "categories": {
+    "network": "网络调试",
+    "data": "数据处理",
+    "encoding": "编码转换",
+    "text": "文本处理",
+    "file": "文件工具",
+    "generator": "生成器"
   },
   "tools": {
     "json": "JSON",
@@ -18,7 +33,33 @@
     "file": "文件",
     "fileDesc": "读取文本与计算文件哈希",
     "http": "接口调试",
-    "httpDesc": "类 Postman 的 HTTP 请求调试"
+    "httpDesc": "类 Postman 的 HTTP 请求调试",
+    "jwt": "JWT",
+    "jwtDesc": "解码声明并验证 HMAC 签名",
+    "url": "URL",
+    "urlDesc": "URL 解析、参数查看与 URI 编解码",
+    "hash": "Hash / HMAC",
+    "hashDesc": "计算 MD5、SHA 与 HMAC",
+    "regex": "正则测试",
+    "regexDesc": "匹配、捕获分组与替换预览",
+    "diff": "文本 Diff",
+    "diffDesc": "按行或字符比较文本差异",
+    "convert": "数据转换",
+    "convertDesc": "JSON、YAML、TOML、XML、CSV 互转",
+    "cron": "Cron",
+    "cronDesc": "校验表达式并预览执行时间",
+    "sql": "SQL",
+    "sqlDesc": "格式化和压缩常见 SQL 方言",
+    "network": "网络诊断",
+    "networkDesc": "DNS、TCP 端口与 IP/CIDR 计算",
+    "batchFile": "批量文件",
+    "batchFileDesc": "哈希、文本检测、查重和重命名",
+    "image": "图片",
+    "imageDesc": "图片信息、压缩与格式转换",
+    "qr": "二维码",
+    "qrDesc": "生成二维码并从图片识别",
+    "clipboard": "剪贴板识别",
+    "clipboardDesc": "识别内容并推荐对应工具"
   },
   "languages": {
     "label": "语言"
@@ -26,6 +67,11 @@
   "settings": {
     "label": "设置",
     "description": "在此管理应用程序的设置和偏好。",
+    "drafts": {
+      "label": "工具草稿",
+      "description": "清除自动保存的非敏感输入。HTTP 地址、请求头和正文不会保存。",
+      "clear": "清除草稿"
+    },
     "theme": {
       "label": "主题",
       "description": "选择应用程序的主题。",

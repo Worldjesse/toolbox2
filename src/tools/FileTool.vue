@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+import { ref } from 'vue'
 import ToolShell from '@/components/ToolShell.vue'
 import { Button } from '@/components/ui/button'
+import { useToolDraft } from '@/composables/useToolDraft'
 
 const filePath = ref('')
 const content = ref('')
 const hash = ref('')
-const algo = ref<'md5' | 'sha256' | 'sha512'>('sha256')
+const algo = useToolDraft<'md5' | 'sha256' | 'sha512'>('file', 'algorithm', 'sha256')
 const error = ref('')
 
 async function pickFile() {

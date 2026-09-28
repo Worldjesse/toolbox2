@@ -2,11 +2,12 @@
 import { ref } from 'vue'
 import ToolShell from '@/components/ToolShell.vue'
 import { Button } from '@/components/ui/button'
+import { useToolDraft } from '@/composables/useToolDraft'
 
-const input = ref('')
+const input = useToolDraft('json', 'input', '')
 const output = ref('')
 const error = ref('')
-const indent = ref(2)
+const indent = useToolDraft('json', 'indent', 2)
 
 function formatJson() {
   error.value = ''

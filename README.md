@@ -17,6 +17,17 @@ A desktop application starter using the libraries and technologies:
 - AI Support
   - [Tauri Pilot](https://github.com/mpiton/tauri-pilot) lets AI agents inspect, interact with, and debug Tauri applications in real-time
 
+## Included tools
+
+- Network: HTTP client, DNS/TCP diagnostics, IP/CIDR calculator
+- Data: JSON, JSON/YAML/TOML/XML/CSV conversion, SQL formatting
+- Encoding: JWT, URL, Hash/HMAC, Base64, timestamps
+- Text: regex testing, text diff, line processing, clipboard detection
+- Files: text/hash inspection, batch hashes, duplicate scanning, batch rename, image conversion
+- Generators: UUID, Cron previews, QR code generation and scanning
+
+Press `Ctrl+K` anywhere in the app to search and open a tool. Favorites, recent tools, and non-sensitive drafts are stored locally.
+
 ## Preview
 
 ### _Light mode dashboard view_

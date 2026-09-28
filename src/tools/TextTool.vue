@@ -2,9 +2,10 @@
 import { ref } from 'vue'
 import ToolShell from '@/components/ToolShell.vue'
 import { Button } from '@/components/ui/button'
+import { useToolDraft } from '@/composables/useToolDraft'
 
-const input = ref('')
-const mode = ref<'dedupe' | 'sort' | 'sortRev' | 'upper' | 'lower' | 'trim' | 'empty'>('dedupe')
+const input = useToolDraft('text', 'input', '')
+const mode = useToolDraft<'dedupe' | 'sort' | 'sortRev' | 'upper' | 'lower' | 'trim' | 'empty'>('text', 'mode', 'dedupe')
 const result = ref('')
 
 function processText() {

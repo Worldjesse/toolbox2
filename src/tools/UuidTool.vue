@@ -2,8 +2,9 @@
 import { ref } from 'vue'
 import ToolShell from '@/components/ToolShell.vue'
 import { Button } from '@/components/ui/button'
+import { useToolDraft } from '@/composables/useToolDraft'
 
-const count = ref(4)
+const count = useToolDraft('uuid', 'count', 4)
 const list = ref<string[]>([])
 
 function gen() {

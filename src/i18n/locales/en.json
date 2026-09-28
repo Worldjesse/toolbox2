@@ -2,7 +2,22 @@
   "home": {
     "label": "Home",
     "title": "My Toolbox",
-    "subtitle": "Local developer utilities powered by Tauri + Vue."
+    "subtitle": "Local developer utilities powered by Tauri + Vue.",
+    "favorites": "Favorites",
+    "recent": "Recently used"
+  },
+  "command": {
+    "title": "Find a tool",
+    "placeholder": "Search tools...",
+    "empty": "No matching tools"
+  },
+  "categories": {
+    "network": "Network",
+    "data": "Data",
+    "encoding": "Encoding",
+    "text": "Text",
+    "file": "Files",
+    "generator": "Generators"
   },
   "tools": {
     "json": "JSON",
@@ -18,7 +33,33 @@
     "file": "File",
     "fileDesc": "Read text files and compute hashes",
     "http": "API Client",
-    "httpDesc": "Postman-like HTTP request debugger"
+    "httpDesc": "Postman-like HTTP request debugger",
+    "jwt": "JWT",
+    "jwtDesc": "Decode claims and verify HMAC signatures",
+    "url": "URL",
+    "urlDesc": "Parse URLs, inspect queries, encode and decode",
+    "hash": "Hash / HMAC",
+    "hashDesc": "Calculate MD5, SHA and HMAC values",
+    "regex": "Regex",
+    "regexDesc": "Test matches, groups and replacements",
+    "diff": "Text Diff",
+    "diffDesc": "Compare text by lines or characters",
+    "convert": "Data Converter",
+    "convertDesc": "Convert JSON, YAML, TOML, XML and CSV",
+    "cron": "Cron",
+    "cronDesc": "Validate expressions and preview runs",
+    "sql": "SQL",
+    "sqlDesc": "Format and minify common SQL dialects",
+    "network": "Network Diagnostics",
+    "networkDesc": "DNS, TCP ports and IP/CIDR calculations",
+    "batchFile": "Batch Files",
+    "batchFileDesc": "Hash, inspect, deduplicate and rename files",
+    "image": "Images",
+    "imageDesc": "Inspect, compress and convert images",
+    "qr": "QR Code",
+    "qrDesc": "Generate and scan QR codes",
+    "clipboard": "Clipboard Detector",
+    "clipboardDesc": "Detect content and suggest a tool"
   },
   "languages": {
     "label": "Languages"
@@ -26,6 +67,11 @@
   "settings": {
     "label": "Settings",
     "description": "Manage the app settings and preferences here.",
+    "drafts": {
+      "label": "Tool drafts",
+      "description": "Clear auto-saved non-sensitive inputs. HTTP URLs, headers and bodies are never saved.",
+      "clear": "Clear drafts"
+    },
     "theme": {
       "label": "Theme",
       "description": "Choose the theme for the app.",

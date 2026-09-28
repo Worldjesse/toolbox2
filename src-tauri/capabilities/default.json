@@ -42,6 +42,13 @@
     "pilot:default",
     "allow-read-text-file",
     "allow-calc-file-hash",
+    "allow-calc-text-hash",
+    "allow-calc-hmac",
+    "allow-calc-files-hash",
+    "allow-inspect-text-file",
+    "allow-network-diagnostics",
+    "allow-find-duplicate-files",
+    "allow-rename-files",
     "allow-http-request"
   ]
 }

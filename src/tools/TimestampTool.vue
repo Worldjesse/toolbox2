@@ -2,10 +2,11 @@
 import { ref } from 'vue'
 import ToolShell from '@/components/ToolShell.vue'
 import { Button } from '@/components/ui/button'
+import { useToolDraft } from '@/composables/useToolDraft'
 
-const ts = ref<number>(Math.floor(Date.now() / 1000))
+const ts = useToolDraft<number>('timestamp', 'timestamp', Math.floor(Date.now() / 1000))
 const tsResult = ref('')
-const dateStr = ref('')
+const dateStr = useToolDraft('timestamp', 'date', '')
 const dateResult = ref('')
 
 function tsToDate() {

@@ -9,6 +9,41 @@ description = "Allows calculating file hashes via calc_file_hash"
 commands.allow = ["calc_file_hash"]
 
 [[permission]]
+identifier = "allow-calc-text-hash"
+description = "Allows calculating text hashes"
+commands.allow = ["calc_text_hash"]
+
+[[permission]]
+identifier = "allow-calc-files-hash"
+description = "Allows calculating hashes for multiple files"
+commands.allow = ["calc_files_hash"]
+
+[[permission]]
+identifier = "allow-inspect-text-file"
+description = "Allows inspecting text file encoding and line endings"
+commands.allow = ["inspect_text_file"]
+
+[[permission]]
+identifier = "allow-calc-hmac"
+description = "Allows calculating HMAC values"
+commands.allow = ["calc_hmac"]
+
+[[permission]]
+identifier = "allow-network-diagnostics"
+description = "Allows DNS lookup and TCP connection tests"
+commands.allow = ["dns_lookup", "tcp_probe"]
+
+[[permission]]
+identifier = "allow-find-duplicate-files"
+description = "Allows scanning a directory for duplicate files"
+commands.allow = ["find_duplicate_files"]
+
+[[permission]]
+identifier = "allow-rename-files"
+description = "Allows explicitly requested batch file renames"
+commands.allow = ["rename_files"]
+
+[[permission]]
 identifier = "allow-http-request"
 description = "Allows sending HTTP requests via http_request"
 commands.allow = ["http_request"]

@@ -37,6 +37,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::read_text_file,
             commands::calc_file_hash,
+            commands::calc_files_hash,
+            commands::inspect_text_file,
+            commands::calc_text_hash,
+            commands::calc_hmac,
+            commands::dns_lookup,
+            commands::tcp_probe,
+            commands::find_duplicate_files,
+            commands::rename_files,
             commands::http_request
         ])
         .setup(|app| {

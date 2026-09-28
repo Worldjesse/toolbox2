@@ -2,8 +2,9 @@
 import { ref } from 'vue'
 import ToolShell from '@/components/ToolShell.vue'
 import { Button } from '@/components/ui/button'
+import { useToolDraft } from '@/composables/useToolDraft'
 
-const input = ref('')
+const input = useToolDraft('base64', 'input', '')
 const output = ref('')
 const error = ref('')
 

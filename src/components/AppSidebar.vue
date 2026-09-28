@@ -1,42 +1,53 @@
 <script setup lang="ts">
-import { Icon } from '@iconify/vue'
+import { House, Settings } from '@lucide/vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import ToolIcon from '@/components/ToolIcon.vue'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useToolboxStore } from '@/stores/toolbox'
+import { toolRegistry } from '@/tools/registry'
 
 const { t } = useI18n()
+const toolbox = useToolboxStore()
 
-const sidebarRoutes = [
-  { name: 'home.label', icon: 'ph:house-duotone', path: '/home' },
-  { name: 'tools.http', icon: 'ph:plugs-connected-duotone', path: '/tools/http' },
-  { name: 'tools.json', icon: 'ph:brackets-curly-duotone', path: '/tools/json' },
-  { name: 'tools.timestamp', icon: 'ph:clock-duotone', path: '/tools/timestamp' },
-  { name: 'tools.base64', icon: 'ph:binary-duotone', path: '/tools/base64' },
-  { name: 'tools.uuid', icon: 'ph:fingerprint-duotone', path: '/tools/uuid' },
-  { name: 'tools.text', icon: 'ph:text-aa-duotone', path: '/tools/text' },
-  { name: 'tools.file', icon: 'ph:file-duotone', path: '/tools/file' },
-]
+const pinnedTools = computed(() => toolbox.favoriteTools.length
+  ? toolbox.favoriteTools
+  : toolRegistry.slice(0, 7))
 </script>
 
 <template>
   <aside class="flex h-dvh flex-col justify-between bg-sidebar px-2 pb-12 pt-2">
     <nav class="grid gap-1">
-      <Tooltip v-for="sidebarRoute in sidebarRoutes" :key="sidebarRoute.path">
+      <Tooltip>
         <TooltipTrigger as-child>
-          <RouterLink :to="sidebarRoute.path">
-            <Button
-              variant="ghost"
-              size="icon"
-              :class="sidebarRoute.path === $route.path ? 'bg-muted' : ''"
-              class="rounded-lg"
-              :aria-label="t(sidebarRoute.name)"
-            >
-              <Icon :icon="sidebarRoute.icon" class="size-5" />
+          <RouterLink to="/home">
+            <Button variant="ghost" size="icon" class="rounded-lg" :class="$route.path === '/home' ? 'bg-muted' : ''" :aria-label="t('home.label')">
+              <House class="size-5" />
             </Button>
           </RouterLink>
         </TooltipTrigger>
         <TooltipContent side="right" :side-offset="5">
-          {{ t(sidebarRoute.name) }}
+          {{ t('home.label') }}
+        </TooltipContent>
+      </Tooltip>
+      <div class="my-1 h-px bg-border" />
+      <Tooltip v-for="tool in pinnedTools" :key="tool.path">
+        <TooltipTrigger as-child>
+          <RouterLink :to="tool.path">
+            <Button
+              variant="ghost"
+              size="icon"
+              :class="tool.path === $route.path ? 'bg-muted' : ''"
+              class="rounded-lg"
+              :aria-label="t(tool.titleKey)"
+            >
+              <ToolIcon :name="tool.icon" class="size-5" />
+            </Button>
+          </RouterLink>
+        </TooltipTrigger>
+        <TooltipContent side="right" :side-offset="5">
+          {{ t(tool.titleKey) }}
         </TooltipContent>
       </Tooltip>
     </nav>
@@ -51,7 +62,7 @@ const sidebarRoutes = [
               class="mt-auto rounded-lg"
               :aria-label="t('settings.label')"
             >
-              <Icon icon="ph:gear-duotone" class="size-5" />
+              <Settings class="size-5" />
             </Button>
           </RouterLink>
         </TooltipTrigger>

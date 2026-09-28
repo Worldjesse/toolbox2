@@ -1,4 +1,5 @@
 import { createMemoryHistory, createRouter } from 'vue-router'
+import { toolRegistry } from '@/tools/registry'
 
 const routes = [
   {
@@ -10,41 +11,11 @@ const routes = [
         name: 'home',
         component: () => import('@/pages/home.vue'),
       },
-      {
-        path: 'tools/json',
-        name: 'tools-json',
-        component: () => import('@/pages/tools/json.vue'),
-      },
-      {
-        path: 'tools/timestamp',
-        name: 'tools-timestamp',
-        component: () => import('@/pages/tools/timestamp.vue'),
-      },
-      {
-        path: 'tools/base64',
-        name: 'tools-base64',
-        component: () => import('@/pages/tools/base64.vue'),
-      },
-      {
-        path: 'tools/uuid',
-        name: 'tools-uuid',
-        component: () => import('@/pages/tools/uuid.vue'),
-      },
-      {
-        path: 'tools/text',
-        name: 'tools-text',
-        component: () => import('@/pages/tools/text.vue'),
-      },
-      {
-        path: 'tools/http',
-        name: 'tools-http',
-        component: () => import('@/pages/tools/http.vue'),
-      },
-      {
-        path: 'tools/file',
-        name: 'tools-file',
-        component: () => import('@/pages/tools/file.vue'),
-      },
+      ...toolRegistry.map(tool => ({
+        path: tool.path.slice(1),
+        name: `tools-${tool.id}`,
+        component: tool.component,
+      })),
       {
         path: 'settings',
         name: 'settings',
