@@ -1,4 +1,4 @@
-# tauriv2-vue-desktop-starter
+# toolbox
 
 A desktop application starter using the libraries and technologies:
 
@@ -39,7 +39,7 @@ A desktop application starter using the libraries and technologies:
 
 Follow [Tauri's prerequisites guide](https://v2.tauri.app/start/prerequisites/) to setup your development environment.
 
-Then rename all instances of `tauriv2-vue-desktop-starter` and `tauriv2_vue_desktop_starter` to your app name.
+App identity: Toolbox / com.toolbox.app / 我的工具箱.
 
 If you want to replace the package manager update:
 
@@ -75,7 +75,7 @@ Then update the `supportedLanguages` function in [lib/config.ts](./src/lib/confi
 
 Tauri Store Plugin stores `settings.json` at:
 
-**macOS**: `~/Library/Application Support/com.github.tauriv2-vue-desktop-starter`
+**macOS**: `~/Library/Application Support/com.toolbox.app`
 
 #### App Icon
 

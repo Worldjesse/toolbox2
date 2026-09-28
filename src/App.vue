@@ -9,9 +9,9 @@ import { TooltipProvider } from '@/components/ui/tooltip'
   <ConfigProvider>
     <AppTopbar />
     <TooltipProvider>
-      <main class="flex">
+      <main class="flex h-[calc(100dvh-2.5rem)] min-h-0">
         <AppSidebar />
-        <section class="bg-background grow p-4">
+        <section class="bg-background min-h-0 grow overflow-auto p-4">
           <router-view />
         </section>
       </main>

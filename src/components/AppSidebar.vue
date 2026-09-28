@@ -7,18 +7,21 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 const { t } = useI18n()
 
 const sidebarRoutes = [
-  {
-    name: 'home.label',
-    icon: 'ph:house-duotone',
-    path: '/home',
-  },
+  { name: 'home.label', icon: 'ph:house-duotone', path: '/home' },
+  { name: 'tools.http', icon: 'ph:plugs-connected-duotone', path: '/tools/http' },
+  { name: 'tools.json', icon: 'ph:brackets-curly-duotone', path: '/tools/json' },
+  { name: 'tools.timestamp', icon: 'ph:clock-duotone', path: '/tools/timestamp' },
+  { name: 'tools.base64', icon: 'ph:binary-duotone', path: '/tools/base64' },
+  { name: 'tools.uuid', icon: 'ph:fingerprint-duotone', path: '/tools/uuid' },
+  { name: 'tools.text', icon: 'ph:text-aa-duotone', path: '/tools/text' },
+  { name: 'tools.file', icon: 'ph:file-duotone', path: '/tools/file' },
 ]
 </script>
 
 <template>
-  <aside class="flex flex-col h-dvh pb-12 pt-2 px-2 justify-between bg-sidebar">
+  <aside class="flex h-dvh flex-col justify-between bg-sidebar px-2 pb-12 pt-2">
     <nav class="grid gap-1">
-      <Tooltip v-for="sidebarRoute in sidebarRoutes" :key="sidebarRoute.name">
+      <Tooltip v-for="sidebarRoute in sidebarRoutes" :key="sidebarRoute.path">
         <TooltipTrigger as-child>
           <RouterLink :to="sidebarRoute.path">
             <Button
@@ -37,7 +40,7 @@ const sidebarRoutes = [
         </TooltipContent>
       </Tooltip>
     </nav>
-    <div class="">
+    <div>
       <Tooltip>
         <TooltipTrigger as-child>
           <RouterLink to="/settings">

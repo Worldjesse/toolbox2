@@ -1,6 +1,24 @@
 {
   "home": {
-    "label": "首页"
+    "label": "首页",
+    "title": "我的工具箱",
+    "subtitle": "基于 Tauri + Vue 的本地开发小工具集合。"
+  },
+  "tools": {
+    "json": "JSON",
+    "jsonDesc": "格式化、压缩与校验 JSON",
+    "timestamp": "时间戳",
+    "timestampDesc": "Unix 时间戳与本地时间互转",
+    "base64": "Base64",
+    "base64Desc": "支持 UTF-8 中文的编解码",
+    "uuid": "UUID",
+    "uuidDesc": "批量生成 RFC4122 v4 UUID",
+    "text": "文本",
+    "textDesc": "去重、排序、大小写与去空行",
+    "file": "文件",
+    "fileDesc": "读取文本与计算文件哈希",
+    "http": "接口调试",
+    "httpDesc": "类 Postman 的 HTTP 请求调试"
   },
   "languages": {
     "label": "语言"

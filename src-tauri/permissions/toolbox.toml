@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-read-text-file"
+description = "Allows reading a text file via read_text_file"
+commands.allow = ["read_text_file"]
+
+[[permission]]
+identifier = "allow-calc-file-hash"
+description = "Allows calculating file hashes via calc_file_hash"
+commands.allow = ["calc_file_hash"]
+
+[[permission]]
+identifier = "allow-http-request"
+description = "Allows sending HTTP requests via http_request"
+commands.allow = ["http_request"]

@@ -39,6 +39,9 @@
     "shell:allow-execute",
     "shell:allow-kill",
     "shell:allow-spawn",
-    "pilot:default"
+    "pilot:default",
+    "allow-read-text-file",
+    "allow-calc-file-hash",
+    "allow-http-request"
   ]
 }

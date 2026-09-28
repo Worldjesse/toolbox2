@@ -1,6 +1,24 @@
 {
   "home": {
-    "label": "Home"
+    "label": "Home",
+    "title": "My Toolbox",
+    "subtitle": "Local developer utilities powered by Tauri + Vue."
+  },
+  "tools": {
+    "json": "JSON",
+    "jsonDesc": "Format, minify and validate JSON",
+    "timestamp": "Timestamp",
+    "timestampDesc": "Unix timestamp ↔ local datetime",
+    "base64": "Base64",
+    "base64Desc": "Encode / decode with UTF-8",
+    "uuid": "UUID",
+    "uuidDesc": "Generate RFC4122 v4 UUIDs",
+    "text": "Text",
+    "textDesc": "Dedupe, sort, case and blank-line tools",
+    "file": "File",
+    "fileDesc": "Read text files and compute hashes",
+    "http": "API Client",
+    "httpDesc": "Postman-like HTTP request debugger"
   },
   "languages": {
     "label": "Languages"

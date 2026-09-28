@@ -4,16 +4,13 @@ use plugins::logging;
 use tauri::Manager;
 use tauri_plugin_decorum::WebviewWindowExt;
 
+pub mod commands;
 pub mod plugins;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        if let Err(err) = fix_path_env::fix() {
-            log::warn!("fix-path-env failed: {err}; falling back to well-known dirs");
-        }
-    }
+    // fix-path-env removed on this fork: git dependency needs GitHub access and
+    // only applied on macOS/Linux path fixing.
     let mut builder =
         tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|_, _, _| {}));
 
@@ -37,7 +34,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
-        .invoke_handler(tauri::generate_handler![])
+        .invoke_handler(tauri::generate_handler![
+            commands::read_text_file,
+            commands::calc_file_hash,
+            commands::http_request
+        ])
         .setup(|app| {
             // Create a custom titlebar for main window
             // On Windows this hides decoration and creates custom window controls
