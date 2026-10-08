@@ -14,8 +14,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Separator } from '@/components/ui/separator'
-
 import { getLanguageLabel, supportedLanguages } from '@/lib/config'
 import { useSettingsStore } from '@/stores/settings'
 
@@ -40,25 +38,24 @@ async function clearDrafts() {
 </script>
 
 <template>
-  <div class="container mx-auto">
-    <div class="space-y-0.5 p-10">
-      <h2 class="text-2xl font-bold tracking-tight">
+  <div class="mx-auto max-w-4xl overflow-hidden rounded-lg border border-border bg-card shadow-[0_1px_2px_oklch(0.2_0.03_190/0.04),0_14px_40px_oklch(0.2_0.03_190/0.05)]">
+    <div class="space-y-1 border-b border-border bg-secondary/45 px-6 py-5">
+      <h2 class="text-xl font-bold">
         {{ t('settings.label') }}
       </h2>
-      <p class="text-muted-foreground">
+      <p class="text-sm text-muted-foreground">
         {{ t('settings.description') }}
       </p>
     </div>
-    <Separator class="my-6" />
-    <div class="space-y-8">
-      <div class="flex items-center space-x-2">
-        <Label class="text-lg font-medium" for="theme-switch">{{ t('settings.theme.label') }}</Label>
+    <div class="divide-y divide-border px-6">
+      <div class="flex min-h-20 items-center justify-between gap-4 py-5">
+        <Label class="font-medium" for="theme-switch">{{ t('settings.theme.label') }}</Label>
         <ThemeSwitch />
       </div>
-      <div class="flex items-center space-x-2">
-        <Label class="text-lg font-medium" for="language-select">{{ t('languages.label') }}</Label>
+      <div class="flex min-h-20 items-center justify-between gap-4 py-5">
+        <Label class="font-medium" for="language-select">{{ t('languages.label') }}</Label>
         <Select id="language-select" v-model="locale">
-          <SelectTrigger>
+          <SelectTrigger class="w-48">
             <SelectValue :placeholder="getLanguageLabel(locale)" />
           </SelectTrigger>
           <SelectContent>
@@ -74,7 +71,7 @@ async function clearDrafts() {
           </SelectContent>
         </Select>
       </div>
-      <div class="flex items-center justify-between gap-4 border-t border-border pt-6">
+      <div class="flex min-h-24 items-center justify-between gap-4 py-5">
         <div>
           <div class="font-medium">
             {{ t('settings.drafts.label') }}

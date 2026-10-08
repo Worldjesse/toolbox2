@@ -1,0 +1,3 @@
+# Windows without MSVC: use MSYS2-extracted MinGW + stable-gnu
+[target.x86_64-pc-windows-gnu]
+linker = "D:/tools/toolbox/.mingw-dlls/extract/mingw64/bin/gcc.exe"

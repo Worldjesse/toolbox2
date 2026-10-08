@@ -44,6 +44,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 base64 = "0.22"
 tokio = { version = "1", features = ["time", "net"] }
 walkdir = "2"
+mysql_async = { version = "0.37.1", default-features = false, features = ["default-rustls-ring"] }
+sqlparser = "0.63.0"
 
 [workspace.lints.clippy]
 # Prevent panics from unwraps and unsafe slicing or indexing

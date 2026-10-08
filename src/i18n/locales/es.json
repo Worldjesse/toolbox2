@@ -9,7 +9,8 @@
   "command": {
     "title": "Buscar herramienta",
     "placeholder": "Buscar herramientas...",
-    "empty": "No hay herramientas coincidentes"
+    "empty": "No hay herramientas coincidentes",
+    "close": "Cerrar"
   },
   "categories": {
     "network": "Red",
@@ -49,7 +50,7 @@
     "cron": "Cron",
     "cronDesc": "Validar expresiones y próximas ejecuciones",
     "sql": "SQL",
-    "sqlDesc": "Formatear y comprimir SQL",
+    "sqlDesc": "Formatear SQL y consultar MySQL en modo lectura",
     "network": "Diagnóstico de red",
     "networkDesc": "DNS, puertos TCP y cálculo CIDR",
     "batchFile": "Archivos por lotes",

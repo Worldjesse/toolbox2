@@ -130,7 +130,7 @@ export const toolRegistry: ToolDefinition[] = [
     descKey: 'tools.sqlDesc',
     category: 'data',
     icon: 'ph:database-duotone',
-    keywords: ['sql', 'mysql', 'postgresql', 'format', '数据库', '格式化'],
+    keywords: ['sql', 'mysql', 'query', 'database', 'navicat', 'format', '数据库', '查询', '格式化'],
     component: () => import('@/pages/tools/sql.vue'),
   },
   {

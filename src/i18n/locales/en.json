@@ -9,7 +9,8 @@
   "command": {
     "title": "Find a tool",
     "placeholder": "Search tools...",
-    "empty": "No matching tools"
+    "empty": "No matching tools",
+    "close": "Close"
   },
   "categories": {
     "network": "Network",
@@ -49,7 +50,7 @@
     "cron": "Cron",
     "cronDesc": "Validate expressions and preview runs",
     "sql": "SQL",
-    "sqlDesc": "Format and minify common SQL dialects",
+    "sqlDesc": "Format SQL and run read-only MySQL queries",
     "network": "Network Diagnostics",
     "networkDesc": "DNS, TCP ports and IP/CIDR calculations",
     "batchFile": "Batch Files",

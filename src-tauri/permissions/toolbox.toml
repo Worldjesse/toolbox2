@@ -47,3 +47,8 @@ commands.allow = ["rename_files"]
 identifier = "allow-http-request"
 description = "Allows sending HTTP requests via http_request"
 commands.allow = ["http_request"]
+
+[[permission]]
+identifier = "allow-mysql-readonly"
+description = "Allows testing MySQL connections, browsing schemas, and running read-only queries"
+commands.allow = ["mysql_test_connection", "mysql_catalog", "mysql_query"]

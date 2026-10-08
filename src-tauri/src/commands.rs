@@ -1,11 +1,17 @@
 use base64::Engine;
 use hmac::{Hmac, Mac};
 use md5::Md5;
+use mysql_async::prelude::Queryable;
+use mysql_async::{Conn, OptsBuilder, Row, Value};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
+use sqlparser::ast::{Query, SetExpr, Statement};
+use sqlparser::dialect::MySqlDialect;
+use sqlparser::parser::Parser;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Instant;
 use walkdir::WalkDir;
 
@@ -298,8 +304,32 @@ pub struct HttpResponseOutput {
     pub body: String,
     pub duration_ms: u64,
     pub size_bytes: usize,
+    pub truncated: bool,
     pub final_url: String,
     pub error: Option<String>,
+}
+
+const MAX_HTTP_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PRETTY_JSON_BYTES: usize = 256 * 1024;
+
+fn http_client() -> Result<&'static reqwest::Client, String> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::limited(10))
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+fn append_limited(buffer: &mut Vec<u8>, chunk: &[u8], limit: usize) -> bool {
+    let remaining = limit.saturating_sub(buffer.len());
+    let take = remaining.min(chunk.len());
+    buffer.extend_from_slice(&chunk[..take]);
+    take < chunk.len()
 }
 
 /// Send an HTTP request (Postman-like). Runs outside WebView so no CORS.
@@ -316,11 +346,7 @@ pub async fn http_request(input: HttpRequestInput) -> Result<HttpResponseOutput,
 
     let timeout =
         std::time::Duration::from_millis(input.timeout_ms.unwrap_or(30_000).max(1_000));
-    let client = reqwest::Client::builder()
-        .timeout(timeout)
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = http_client()?;
 
     let mut url = reqwest::Url::parse(raw_url).map_err(|e| format!("invalid url: {e}"))?;
     {
@@ -337,7 +363,7 @@ pub async fn http_request(input: HttpRequestInput) -> Result<HttpResponseOutput,
     let http_method = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| format!("unsupported method: {method}"))?;
 
-    let mut builder = client.request(http_method, url);
+    let mut builder = client.request(http_method, url).timeout(timeout);
 
     for h in input
         .headers
@@ -378,7 +404,7 @@ pub async fn http_request(input: HttpRequestInput) -> Result<HttpResponseOutput,
     }
 
     let started = Instant::now();
-    let response = match builder.send().await {
+    let mut response = match builder.send().await {
         Ok(r) => r,
         Err(e) => {
             return Ok(HttpResponseOutput {
@@ -389,6 +415,7 @@ pub async fn http_request(input: HttpRequestInput) -> Result<HttpResponseOutput,
                 body: String::new(),
                 duration_ms: started.elapsed().as_millis() as u64,
                 size_bytes: 0,
+                truncated: false,
                 final_url: raw_url.to_string(),
                 error: Some(e.to_string()),
             });
@@ -409,22 +436,47 @@ pub async fn http_request(input: HttpRequestInput) -> Result<HttpResponseOutput,
         });
     }
 
-    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    let size_bytes = bytes.len();
-    let body = match String::from_utf8(bytes.to_vec()) {
+    let declared_size = response
+        .content_length()
+        .and_then(|size| usize::try_from(size).ok());
+    let mut bytes = Vec::with_capacity(
+        declared_size
+            .unwrap_or_default()
+            .min(MAX_HTTP_RESPONSE_BYTES),
+    );
+    let mut truncated = declared_size.is_some_and(|size| size > MAX_HTTP_RESPONSE_BYTES);
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if append_limited(&mut bytes, &chunk, MAX_HTTP_RESPONSE_BYTES) {
+            truncated = true;
+            break;
+        }
+    }
+    let size_bytes = declared_size.unwrap_or(bytes.len());
+    let captured_size = bytes.len();
+    let mut body = match String::from_utf8(bytes) {
         Ok(s) => {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-                serde_json::to_string_pretty(&v).unwrap_or(s)
+            if !truncated && captured_size <= MAX_PRETTY_JSON_BYTES {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                    serde_json::to_string_pretty(&v).unwrap_or(s)
+                } else {
+                    s
+                }
             } else {
                 s
             }
         }
-        Err(_) => format!(
-            "<binary {} bytes, base64>\n{}",
-            size_bytes,
-            base64::engine::general_purpose::STANDARD.encode(bytes.as_ref())
-        ),
+        Err(error) => {
+            let binary = error.into_bytes();
+            format!(
+                "<binary {} bytes, base64>\n{}",
+                captured_size,
+                base64::engine::general_purpose::STANDARD.encode(&binary)
+            )
+        }
     };
+    if truncated {
+        body.push_str("\n\n[Response body truncated at 2 MiB to protect application performance]");
+    }
 
     Ok(HttpResponseOutput {
         ok: status.is_success(),
@@ -434,14 +486,278 @@ pub async fn http_request(input: HttpRequestInput) -> Result<HttpResponseOutput,
         body,
         duration_ms: started.elapsed().as_millis() as u64,
         size_bytes,
+        truncated,
         final_url,
         error: None,
     })
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MysqlConnectionInput {
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    database: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MysqlConnectionResult {
+    server_version: String,
+    database: Option<String>,
+    duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MysqlDatabaseInfo {
+    name: String,
+    tables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MysqlQueryInput {
+    connection: MysqlConnectionInput,
+    sql: String,
+    max_rows: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MysqlQueryResult {
+    columns: Vec<String>,
+    rows: Vec<Vec<serde_json::Value>>,
+    row_count: usize,
+    truncated: bool,
+    duration_ms: u64,
+}
+
+fn mysql_opts(input: &MysqlConnectionInput) -> Result<OptsBuilder, String> {
+    if input.host.trim().is_empty() {
+        return Err("host is required".into());
+    }
+    if input.username.trim().is_empty() {
+        return Err("username is required".into());
+    }
+    if input.port == 0 {
+        return Err("port must be between 1 and 65535".into());
+    }
+
+    let database = input
+        .database
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    Ok(OptsBuilder::default()
+        .ip_or_hostname(input.host.trim())
+        .tcp_port(input.port)
+        .user(Some(input.username.trim()))
+        .pass(Some(input.password.as_str()))
+        .db_name(database))
+}
+
+async fn mysql_connection(input: &MysqlConnectionInput) -> Result<Conn, String> {
+    tokio::time::timeout(std::time::Duration::from_secs(10), Conn::new(mysql_opts(input)?))
+        .await
+        .map_err(|_| "connection timed out after 10 seconds".to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn mysql_test_connection(
+    input: MysqlConnectionInput,
+) -> Result<MysqlConnectionResult, String> {
+    let started = Instant::now();
+    let mut connection = mysql_connection(&input).await?;
+    let row: Option<(String, Option<String>)> = connection
+        .query_first("SELECT VERSION(), DATABASE()")
+        .await
+        .map_err(|error| error.to_string())?;
+    let (server_version, database) =
+        row.ok_or_else(|| "server returned no connection details".to_string())?;
+    connection
+        .disconnect()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(MysqlConnectionResult {
+        server_version,
+        database,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+#[tauri::command]
+pub async fn mysql_catalog(input: MysqlConnectionInput) -> Result<Vec<MysqlDatabaseInfo>, String> {
+    let mut connection = mysql_connection(&input).await?;
+    let databases: Vec<String> = connection
+        .query("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA ORDER BY SCHEMA_NAME")
+        .await
+        .map_err(|error| error.to_string())?;
+    let table_rows: Vec<(String, String)> = connection
+        .query(
+            "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES \
+             WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW') ORDER BY TABLE_SCHEMA, TABLE_NAME",
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    connection
+        .disconnect()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let mut tables_by_database: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (database, table) in table_rows {
+        tables_by_database.entry(database).or_default().push(table);
+    }
+    Ok(databases
+        .into_iter()
+        .map(|name| MysqlDatabaseInfo {
+            tables: tables_by_database.remove(&name).unwrap_or_default(),
+            name,
+        })
+        .collect())
+}
+
+fn ensure_read_only_sql(sql: &str) -> Result<(), String> {
+    let statements = Parser::parse_sql(&MySqlDialect {}, sql)
+        .map_err(|error| format!("invalid MySQL syntax: {error}"))?;
+    let [statement] = statements.as_slice() else {
+        return Err("exactly one SQL statement is required".into());
+    };
+    let read_only = match statement {
+        Statement::Query(query) => is_read_only_query(query),
+        Statement::Explain { statement, .. } => {
+            matches!(statement.as_ref(), Statement::Query(query) if is_read_only_query(query))
+        }
+        Statement::ShowFunctions { .. }
+            | Statement::ShowVariable { .. }
+            | Statement::ShowStatus { .. }
+            | Statement::ShowVariables { .. }
+            | Statement::ShowCreate { .. }
+            | Statement::ShowColumns { .. }
+            | Statement::ShowCatalogs { .. }
+            | Statement::ShowDatabases { .. }
+            | Statement::ShowProcessList { .. }
+            | Statement::ShowSchemas { .. }
+            | Statement::ShowCharset(_)
+            | Statement::ShowObjects(_)
+            | Statement::ShowTables { .. }
+            | Statement::ShowViews { .. }
+            | Statement::ShowCollation { .. }
+            | Statement::ExplainTable { .. } => true,
+        _ => false,
+    };
+    if !read_only {
+        return Err("only a single read-only SELECT, SHOW, DESCRIBE, or EXPLAIN query is allowed".into());
+    }
+    Ok(())
+}
+
+fn is_read_only_query(query: &Query) -> bool {
+    let ctes_are_read_only = query
+        .with
+        .as_ref()
+        .map(|with| with.cte_tables.iter().all(|cte| is_read_only_query(&cte.query)))
+        .unwrap_or(true);
+    ctes_are_read_only && is_read_only_set_expression(&query.body)
+}
+
+fn is_read_only_set_expression(expression: &SetExpr) -> bool {
+    match expression {
+        SetExpr::Select(select) => select.into.is_none(),
+        SetExpr::Query(query) => is_read_only_query(query),
+        SetExpr::SetOperation { left, right, .. } => {
+            is_read_only_set_expression(left) && is_read_only_set_expression(right)
+        }
+        SetExpr::Values(_) | SetExpr::Table(_) => true,
+        SetExpr::Insert(_) | SetExpr::Update(_) | SetExpr::Delete(_) | SetExpr::Merge(_) => false,
+    }
+}
+
+fn mysql_value_to_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::NULL => serde_json::Value::Null,
+        Value::Bytes(bytes) => serde_json::Value::String(String::from_utf8_lossy(bytes).into_owned()),
+        Value::Int(value) => serde_json::Value::Number((*value).into()),
+        Value::UInt(value) => serde_json::Value::Number((*value).into()),
+        Value::Float(value) => serde_json::Number::from_f64(f64::from(*value))
+            .map(serde_json::Value::Number)
+            .unwrap_or_else(|| serde_json::Value::String(value.to_string())),
+        Value::Double(value) => serde_json::Number::from_f64(*value)
+            .map(serde_json::Value::Number)
+            .unwrap_or_else(|| serde_json::Value::String(value.to_string())),
+        Value::Date(year, month, day, hour, minute, second, micros) => {
+            let suffix = if *micros == 0 { String::new() } else { format!(".{micros:06}") };
+            serde_json::Value::String(format!(
+                "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}{suffix}"
+            ))
+        }
+        Value::Time(negative, days, hours, minutes, seconds, micros) => {
+            let sign = if *negative { "-" } else { "" };
+            let total_hours = u64::from(*days) * 24 + u64::from(*hours);
+            let suffix = if *micros == 0 { String::new() } else { format!(".{micros:06}") };
+            serde_json::Value::String(format!(
+                "{sign}{total_hours:02}:{minutes:02}:{seconds:02}{suffix}"
+            ))
+        }
+    }
+}
+
+fn row_to_json(row: &Row, column_count: usize) -> Vec<serde_json::Value> {
+    (0..column_count)
+        .map(|index| {
+            row.as_ref(index)
+                .map(mysql_value_to_json)
+                .unwrap_or(serde_json::Value::Null)
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn mysql_query(input: MysqlQueryInput) -> Result<MysqlQueryResult, String> {
+    ensure_read_only_sql(&input.sql)?;
+    let max_rows = input.max_rows.unwrap_or(500).clamp(1, 5_000);
+    let started = Instant::now();
+    let mut connection = mysql_connection(&input.connection).await?;
+    let mut result = connection
+        .query_iter(input.sql)
+        .await
+        .map_err(|error| error.to_string())?;
+    let columns = result
+        .columns_ref()
+        .iter()
+        .map(|column| column.name_str().into_owned())
+        .collect::<Vec<_>>();
+    let mut rows = Vec::new();
+    let mut truncated = false;
+    while let Some(row) = result.next().await.map_err(|error| error.to_string())? {
+        if rows.len() >= max_rows {
+            truncated = true;
+            break;
+        }
+        rows.push(row_to_json(&row, columns.len()));
+    }
+    result.drop_result().await.map_err(|error| error.to_string())?;
+    connection
+        .disconnect()
+        .await
+        .map_err(|error| error.to_string())?;
+    let row_count = rows.len();
+    Ok(MysqlQueryResult {
+        columns,
+        rows,
+        row_count,
+        truncated,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{calc_hmac, calc_text_hash};
+    use super::{append_limited, calc_hmac, calc_text_hash, ensure_read_only_sql};
 
     #[test]
     fn calculates_known_text_hashes() {
@@ -466,5 +782,24 @@ mod tests {
             .unwrap(),
             "c02f4c279f543e0bf3afd395467f57cb2711f78b09d8c94e26aafae743650c9e"
         );
+    }
+
+    #[test]
+    fn accepts_only_read_only_mysql_queries() {
+        assert!(ensure_read_only_sql("/* note */\nSELECT 1").is_ok());
+        assert!(ensure_read_only_sql("-- note\nSHOW DATABASES").is_ok());
+        assert!(ensure_read_only_sql("WITH source AS (SELECT 1) SELECT * FROM source").is_ok());
+        assert!(ensure_read_only_sql("UPDATE users SET enabled = 0").is_err());
+        assert!(ensure_read_only_sql("DELETE FROM users").is_err());
+        assert!(ensure_read_only_sql("SELECT 1; DELETE FROM users").is_err());
+        assert!(ensure_read_only_sql("WITH source AS (SELECT 1) UPDATE users SET enabled = 0").is_err());
+    }
+
+    #[test]
+    fn caps_accumulated_http_response_bytes() {
+        let mut bytes = vec![1, 2];
+        assert!(!append_limited(&mut bytes, &[3, 4], 5));
+        assert!(append_limited(&mut bytes, &[5, 6], 5));
+        assert_eq!(bytes, vec![1, 2, 3, 4, 5]);
     }
 }

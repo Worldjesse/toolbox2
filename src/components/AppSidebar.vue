@@ -17,12 +17,12 @@ const pinnedTools = computed(() => toolbox.favoriteTools.length
 </script>
 
 <template>
-  <aside class="flex h-dvh flex-col justify-between bg-sidebar px-2 pb-12 pt-2">
+  <aside class="flex h-full w-14 shrink-0 flex-col justify-between border-r border-sidebar-border bg-sidebar px-2 py-3 text-sidebar-foreground">
     <nav class="grid gap-1">
       <Tooltip>
         <TooltipTrigger as-child>
           <RouterLink to="/home">
-            <Button variant="ghost" size="icon" class="rounded-lg" :class="$route.path === '/home' ? 'bg-muted' : ''" :aria-label="t('home.label')">
+            <Button variant="ghost" size="icon" class="rounded-lg text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground" :class="$route.path === '/home' ? 'bg-sidebar-primary text-sidebar-primary-foreground shadow-sm hover:bg-sidebar-primary hover:text-sidebar-primary-foreground' : ''" :aria-label="t('home.label')">
               <House class="size-5" />
             </Button>
           </RouterLink>
@@ -31,15 +31,15 @@ const pinnedTools = computed(() => toolbox.favoriteTools.length
           {{ t('home.label') }}
         </TooltipContent>
       </Tooltip>
-      <div class="my-1 h-px bg-border" />
+      <div class="my-1 h-px bg-sidebar-border" />
       <Tooltip v-for="tool in pinnedTools" :key="tool.path">
         <TooltipTrigger as-child>
           <RouterLink :to="tool.path">
             <Button
               variant="ghost"
               size="icon"
-              :class="tool.path === $route.path ? 'bg-muted' : ''"
-              class="rounded-lg"
+              :class="tool.path === $route.path ? 'bg-sidebar-primary text-sidebar-primary-foreground shadow-sm hover:bg-sidebar-primary hover:text-sidebar-primary-foreground' : ''"
+              class="rounded-lg text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               :aria-label="t(tool.titleKey)"
             >
               <ToolIcon :name="tool.icon" class="size-5" />
@@ -58,8 +58,8 @@ const pinnedTools = computed(() => toolbox.favoriteTools.length
             <Button
               variant="ghost"
               size="icon"
-              :class="'/settings' === $route.path ? 'bg-muted' : ''"
-              class="mt-auto rounded-lg"
+              :class="'/settings' === $route.path ? 'bg-sidebar-primary text-sidebar-primary-foreground shadow-sm hover:bg-sidebar-primary hover:text-sidebar-primary-foreground' : ''"
+              class="mt-auto rounded-lg text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               :aria-label="t('settings.label')"
             >
               <Settings class="size-5" />

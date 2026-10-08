@@ -9,7 +9,8 @@
   "command": {
     "title": "查找工具",
     "placeholder": "搜索工具...",
-    "empty": "没有匹配的工具"
+    "empty": "没有匹配的工具",
+    "close": "关闭"
   },
   "categories": {
     "network": "网络调试",
@@ -49,7 +50,7 @@
     "cron": "Cron",
     "cronDesc": "校验表达式并预览执行时间",
     "sql": "SQL",
-    "sqlDesc": "格式化和压缩常见 SQL 方言",
+    "sqlDesc": "格式化 SQL，连接 MySQL 并执行只读查询",
     "network": "网络诊断",
     "networkDesc": "DNS、TCP 端口与 IP/CIDR 计算",
     "batchFile": "批量文件",

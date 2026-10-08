@@ -45,7 +45,10 @@ pub fn run() {
             commands::tcp_probe,
             commands::find_duplicate_files,
             commands::rename_files,
-            commands::http_request
+            commands::http_request,
+            commands::mysql_test_connection,
+            commands::mysql_catalog,
+            commands::mysql_query
         ])
         .setup(|app| {
             // Create a custom titlebar for main window
