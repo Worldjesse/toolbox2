@@ -272,6 +272,23 @@ pub struct HttpKv {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpMultipartPart {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub file_path: String,
+    #[serde(default)]
+    pub file_name: String,
+    #[serde(default)]
+    pub content_type: String,
+}
+
 fn default_true() -> bool {
     true
 }
@@ -287,9 +304,11 @@ pub struct HttpRequestInput {
     pub query: Vec<HttpKv>,
     #[serde(default)]
     pub body: Option<String>,
-    /// none | json | text | form
+    /// none | json | text | form | multipart
     #[serde(default)]
     pub body_type: Option<String>,
+    #[serde(default)]
+    pub multipart: Vec<HttpMultipartPart>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
@@ -311,6 +330,17 @@ pub struct HttpResponseOutput {
 
 const MAX_HTTP_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PRETTY_JSON_BYTES: usize = 256 * 1024;
+const MAX_HTTP_UPLOAD_BYTES: u64 = 64 * 1024 * 1024;
+
+fn multipart_header_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            '\r' | '\n' | '"' => '_',
+            _ => character,
+        })
+        .collect()
+}
 
 fn http_client() -> Result<&'static reqwest::Client, String> {
     static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
@@ -347,6 +377,11 @@ pub async fn http_request(input: HttpRequestInput) -> Result<HttpResponseOutput,
     let timeout =
         std::time::Duration::from_millis(input.timeout_ms.unwrap_or(30_000).max(1_000));
     let client = http_client()?;
+    let body_type = input
+        .body_type
+        .as_deref()
+        .unwrap_or("none")
+        .to_ascii_lowercase();
 
     let mut url = reqwest::Url::parse(raw_url).map_err(|e| format!("invalid url: {e}"))?;
     {
@@ -368,20 +403,23 @@ pub async fn http_request(input: HttpRequestInput) -> Result<HttpResponseOutput,
     for h in input
         .headers
         .iter()
-        .filter(|h| h.enabled && !h.key.trim().is_empty())
+        .filter(|h| {
+            h.enabled
+                && !h.key.trim().is_empty()
+                && !(body_type == "multipart"
+                    && h.key.eq_ignore_ascii_case(reqwest::header::CONTENT_TYPE.as_str()))
+        })
     {
         builder = builder.header(h.key.trim(), h.value.as_str());
     }
 
-    let body_type = input
-        .body_type
-        .as_deref()
-        .unwrap_or("none")
-        .to_ascii_lowercase();
     let body = input.body.unwrap_or_default();
-    if body_type != "none" && !body.is_empty() && method != "GET" && method != "HEAD" {
+    if body_type != "none" && method != "GET" && method != "HEAD" {
         match body_type.as_str() {
             "json" => {
+                if body.is_empty() {
+                    return Err("JSON body is empty".into());
+                }
                 if serde_json::from_str::<serde_json::Value>(&body).is_err() {
                     return Err("body is not valid JSON".into());
                 }
@@ -397,8 +435,90 @@ pub async fn http_request(input: HttpRequestInput) -> Result<HttpResponseOutput,
                     )
                     .body(body);
             }
+            "multipart" => {
+                let boundary = format!(
+                    "toolbox-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|error| error.to_string())?
+                        .as_nanos()
+                );
+                let mut multipart_body = Vec::new();
+                for part in input
+                    .multipart
+                    .iter()
+                    .filter(|part| part.enabled && !part.name.trim().is_empty())
+                {
+                    let name = multipart_header_value(part.name.trim());
+                    multipart_body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+                    if part.kind.eq_ignore_ascii_case("file") {
+                        if part.file_path.trim().is_empty() {
+                            return Err(format!("file path is required for multipart field: {name}"));
+                        }
+                        let metadata = tokio::fs::metadata(part.file_path.trim())
+                            .await
+                            .map_err(|error| {
+                                format!("failed to inspect multipart file '{}': {error}", part.file_path)
+                            })?;
+                        if metadata.len() > MAX_HTTP_UPLOAD_BYTES {
+                            return Err(format!(
+                                "multipart file exceeds the 64 MiB safety limit: {}",
+                                part.file_path
+                            ));
+                        }
+                        let data = tokio::fs::read(part.file_path.trim())
+                            .await
+                            .map_err(|error| {
+                                format!("failed to read multipart file '{}': {error}", part.file_path)
+                            })?;
+                        let file_name = if part.file_name.trim().is_empty() {
+                            std::path::Path::new(part.file_path.trim())
+                                .file_name()
+                                .and_then(|value| value.to_str())
+                                .unwrap_or("upload.bin")
+                        } else {
+                            part.file_name.trim()
+                        };
+                        let content_type = if part.content_type.trim().is_empty() {
+                            "application/octet-stream"
+                        } else {
+                            part.content_type.trim()
+                        };
+                        multipart_body.extend_from_slice(
+                            format!(
+                                "Content-Disposition: form-data; name=\"{name}\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n",
+                                multipart_header_value(file_name),
+                                multipart_header_value(content_type)
+                            )
+                            .as_bytes(),
+                        );
+                        multipart_body.extend_from_slice(&data);
+                        multipart_body.extend_from_slice(b"\r\n");
+                    } else {
+                        multipart_body.extend_from_slice(
+                            format!(
+                                "Content-Disposition: form-data; name=\"{name}\"\r\n\r\n{}\r\n",
+                                part.value
+                            )
+                            .as_bytes(),
+                        );
+                    }
+                    if multipart_body.len() as u64 > MAX_HTTP_UPLOAD_BYTES {
+                        return Err("multipart request exceeds the 64 MiB safety limit".into());
+                    }
+                }
+                multipart_body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+                builder = builder
+                    .header(
+                        reqwest::header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(multipart_body);
+            }
             _ => {
-                builder = builder.body(body);
+                if !body.is_empty() {
+                    builder = builder.body(body);
+                }
             }
         }
     }

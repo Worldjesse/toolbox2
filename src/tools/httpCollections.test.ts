@@ -1,7 +1,7 @@
 import type { SavedHttpRequest } from './httpCollections'
 import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
-import { cloneHttpKeyValues, filterHttpRequests, normalizeHttpCollection, requestCountForGroup } from './httpCollections'
+import { cloneHttpKeyValues, defaultHttpAuth, filterHttpRequests, normalizeHttpCollection, requestCountForGroup } from './httpCollections'
 
 const request: SavedHttpRequest = {
   id: 'request-1',
@@ -14,6 +14,11 @@ const request: SavedHttpRequest = {
   headers: [],
   bodyType: 'json',
   body: '{}',
+  auth: defaultHttpAuth(),
+  cookies: [],
+  multipart: [],
+  variables: [],
+  assertions: [],
   updatedAt: 1,
 }
 
@@ -35,6 +40,30 @@ describe('http collections', () => {
 
     expect(state.groups).toHaveLength(1)
     expect(state.requests.map(item => item.id)).toEqual(['request-1'])
+    expect(state.version).toBe(3)
+  })
+
+  it('migrates version 1 requests with defaults for phase-one fields', () => {
+    const legacy = { ...request } as Partial<SavedHttpRequest>
+    delete legacy.auth
+    delete legacy.cookies
+    delete legacy.multipart
+    delete legacy.variables
+    delete legacy.assertions
+
+    const state = normalizeHttpCollection({
+      version: 1,
+      groups: [{ id: 'group-1', name: 'OMS', createdAt: 1 }],
+      requests: [legacy],
+    })
+
+    expect(state.requests[0]).toMatchObject({
+      auth: { type: 'none' },
+      cookies: [],
+      multipart: [],
+      variables: [],
+      assertions: [],
+    })
   })
 
   it('searches saved requests by name, url and method', () => {

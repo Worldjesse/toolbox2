@@ -1,11 +1,15 @@
 import { invoke } from '@tauri-apps/api/core'
-import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { defaultHttpAuth } from './httpCollections'
 import HttpTool from './HttpTool.vue'
+import { emptyHttpRequestDraft, emptyHttpWorkspace } from './httpWorkspace'
 
-const { getSetting, saveFile, setSetting, writeTextFile } = vi.hoisted(() => ({
+const { getSetting, openFile, readTextFile, saveFile, setSetting, writeTextFile } = vi.hoisted(() => ({
   getSetting: vi.fn(),
   setSetting: vi.fn(),
+  openFile: vi.fn(),
+  readTextFile: vi.fn(),
   saveFile: vi.fn(),
   writeTextFile: vi.fn(),
 }))
@@ -19,12 +23,16 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
+  open: openFile,
   save: saveFile,
 }))
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
+  readTextFile,
   writeTextFile,
 }))
+
+enableAutoUnmount(afterEach)
 
 function mountTool() {
   return mount(HttpTool, {
@@ -53,11 +61,22 @@ function buttonContainingText(wrapper: ReturnType<typeof mountTool>, text: strin
   return button
 }
 
+function storedValue(key: string) {
+  for (let index = setSetting.mock.calls.length - 1; index >= 0; index--) {
+    const call = setSetting.mock.calls[index]
+    if (call?.[0] === key)
+      return call[1]
+  }
+  return undefined
+}
+
 describe('http tool save dialog', () => {
   beforeEach(() => {
     getSetting.mockReset().mockResolvedValue(undefined)
     setSetting.mockReset().mockResolvedValue(undefined)
     vi.mocked(invoke).mockReset()
+    openFile.mockReset()
+    readTextFile.mockReset()
     saveFile.mockReset()
     writeTextFile.mockReset()
   })
@@ -135,7 +154,7 @@ describe('http tool save dialog', () => {
     await dialog.findAll('button').find(item => item.text().trim() === '另存为')!.trigger('click')
     await flushPromises()
 
-    expect(setSetting).toHaveBeenCalledOnce()
+    expect(storedValue('http.collections')).toBeDefined()
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('1 个分组 · 1 个接口')
   })
@@ -169,7 +188,7 @@ describe('http tool save dialog', () => {
     await dialog.findAll('button').find(item => item.text().trim() === '另存为')!.trigger('click')
     await flushPromises()
 
-    const savedState = setSetting.mock.calls[0][1]
+    const savedState = storedValue('http.collections')
     expect(savedState.requests).toHaveLength(2)
     expect(savedState.requests.find((item: { id: string }) => item.id === 'request-1')).toMatchObject({
       name: '旧接口',
@@ -212,7 +231,7 @@ describe('http tool save dialog', () => {
     await dialog.findAll('button').find(item => item.text().trim() === '更新')!.trigger('click')
     await flushPromises()
 
-    const savedState = setSetting.mock.calls[0][1]
+    const savedState = storedValue('http.collections')
     expect(savedState.requests).toHaveLength(1)
     expect(savedState.requests[0]).toMatchObject({ id: 'request-1', url: 'https://example.com/updated' })
   })
@@ -249,11 +268,347 @@ describe('http tool save dialog', () => {
   })
 })
 
+describe('http tool workspace', () => {
+  beforeEach(() => {
+    getSetting.mockReset().mockResolvedValue(undefined)
+    setSetting.mockReset().mockResolvedValue(undefined)
+    vi.mocked(invoke).mockReset()
+    openFile.mockReset()
+    readTextFile.mockReset()
+    saveFile.mockReset()
+    writeTextFile.mockReset()
+  })
+
+  it('resolves environment variables and Bearer auth before invoking Rust', async () => {
+    const workspace = emptyHttpWorkspace()
+    workspace.environments[0].variables = [
+      { key: 'baseUrl', value: 'https://api.example.com', enabled: true },
+      { key: 'token', value: 'local-secret', enabled: true },
+    ]
+    const draft = emptyHttpRequestDraft()
+    draft.url = '{{baseUrl}}/users'
+    draft.auth = { ...defaultHttpAuth(), type: 'bearer', token: '{{token}}' }
+    workspace.tabs[0].request = draft
+    getSetting.mockImplementation(async (key: string) => key === 'http.workspace' ? workspace : undefined)
+    vi.mocked(invoke).mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: [],
+      body: '{}',
+      durationMs: 9,
+      sizeBytes: 2,
+      truncated: false,
+      finalUrl: 'https://api.example.com/users',
+      error: null,
+    })
+    const wrapper = mountTool()
+    await flushPromises()
+
+    await buttonByText(wrapper, 'Send').trigger('click')
+    await flushPromises()
+
+    expect(invoke).toHaveBeenCalledWith('http_request', {
+      input: expect.objectContaining({
+        url: 'https://api.example.com/users',
+        headers: expect.arrayContaining([
+          expect.objectContaining({ key: 'Authorization', value: 'Bearer local-secret', enabled: true }),
+        ]),
+      }),
+    })
+  })
+
+  it('resolves request, environment and global variables in precedence order', async () => {
+    const workspace = emptyHttpWorkspace()
+    workspace.globalVariables = [
+      { key: 'baseUrl', value: 'https://global.example.com', enabled: true },
+      { key: 'resource', value: 'global', enabled: true },
+    ]
+    workspace.environments[0].variables = [
+      { key: 'baseUrl', value: 'https://environment.example.com', enabled: true },
+      { key: 'resource', value: 'environment', enabled: true },
+    ]
+    const draft = emptyHttpRequestDraft()
+    draft.url = '{{baseUrl}}/{{resource}}'
+    draft.variables = [{ key: 'resource', value: 'request', enabled: true }]
+    workspace.tabs[0].request = draft
+    getSetting.mockImplementation(async (key: string) => key === 'http.workspace' ? workspace : undefined)
+    vi.mocked(invoke).mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: [],
+      body: '{}',
+      durationMs: 9,
+      sizeBytes: 2,
+      truncated: false,
+      finalUrl: 'https://environment.example.com/request',
+      error: null,
+    })
+    const wrapper = mountTool()
+    await flushPromises()
+
+    await buttonByText(wrapper, 'Send').trigger('click')
+    await flushPromises()
+
+    expect(invoke).toHaveBeenCalledWith('http_request', {
+      input: expect.objectContaining({ url: 'https://environment.example.com/request' }),
+    })
+  })
+
+  it('imports a Postman collection into local groups without dismissing on the overlay', async () => {
+    const wrapper = mountTool()
+    await flushPromises()
+
+    await buttonByText(wrapper, '导入').trigger('click')
+    const overlay = wrapper.get('[data-testid="interchange-dialog-overlay"]')
+    await overlay.trigger('click')
+    await overlay.trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('[data-testid="interchange-dialog-overlay"]').exists()).toBe(true)
+
+    await overlay.get('select').setValue('postman')
+    await overlay.get('[data-testid="interchange-input"]').setValue(JSON.stringify({
+      info: { name: 'Imported API' },
+      item: [{
+        name: 'Health',
+        request: { method: 'GET', url: 'https://api.example.com/health', header: [] },
+      }],
+    }))
+    await buttonByText(wrapper, '导入到本地集合').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="interchange-dialog-overlay"]').exists()).toBe(false)
+    expect(storedValue('http.collections')).toMatchObject({
+      version: 3,
+      groups: [{ name: 'Imported API' }],
+      requests: [{ name: 'Health', url: 'https://api.example.com/health' }],
+    })
+  })
+
+  it('keeps independent request drafts in multiple tabs', async () => {
+    const wrapper = mountTool()
+    await flushPromises()
+    const firstUrl = wrapper.get('input[placeholder="https://api.example.com/v1/..."]')
+    await firstUrl.setValue('https://example.com/first')
+
+    await wrapper.get('button[title="新建请求标签"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="http-request-tab"]')).toHaveLength(2)
+    await wrapper.get('input[placeholder="https://api.example.com/v1/..."]').setValue('https://example.com/second')
+
+    await wrapper.findAll('[data-testid="http-request-tab"]')[0].trigger('click')
+    await flushPromises()
+    expect((wrapper.get('input[placeholder="https://api.example.com/v1/..."]').element as HTMLInputElement).value).toBe('https://example.com/first')
+  })
+
+  it('opens variable management without rewriting a literal URL', async () => {
+    const workspace = emptyHttpWorkspace()
+    workspace.environments[0].variables = [
+      { key: 'baseUrl', value: 'https://api.example.com', enabled: true },
+    ]
+    workspace.tabs[0].request.url = 'https://api.example.com/oms/users'
+    getSetting.mockImplementation(async (key: string) => key === 'http.workspace' ? workspace : undefined)
+    const wrapper = mountTool()
+    await flushPromises()
+
+    await wrapper.get('button[title="编辑变量"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="environment-dialog-overlay"]').exists()).toBe(true)
+    expect((wrapper.get('[data-testid="http-url-input"]').element as HTMLInputElement).value).toBe('https://api.example.com/oms/users')
+  })
+
+  it('shows the resolved baseUrl while retaining the variable-backed request URL', async () => {
+    const workspace = emptyHttpWorkspace()
+    workspace.environments[0].variables = [
+      { key: 'baseUrl', value: 'https://api.example.com', enabled: true },
+    ]
+    workspace.tabs[0].request.url = '{{baseUrl}}/oms/users'
+    getSetting.mockImplementation(async (key: string) => key === 'http.workspace' ? workspace : undefined)
+    const wrapper = mountTool()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="http-url-base-prefix"]').text()).toBe('https://api.example.com')
+    expect((wrapper.get('[data-testid="http-url-input"]').element as HTMLInputElement).value).toBe('/oms/users')
+
+    await wrapper.get('button[title="编辑变量"]').trigger('click')
+    const dialog = wrapper.get('[data-testid="environment-dialog-overlay"]')
+    const baseUrlValueInput = dialog.findAll('input[placeholder="变量值"]').find(item => (
+      (item.element as HTMLInputElement).value === 'https://api.example.com'
+    ))!
+    await baseUrlValueInput.setValue('https://new-api.example.com')
+    await buttonByText(wrapper, '完成').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="http-url-base-prefix"]').text()).toBe('https://new-api.example.com')
+    expect(storedValue('http.workspace').environments[0].variables[0].value).toBe('https://new-api.example.com')
+  })
+
+  it('resolves any manually entered leading URL variable', async () => {
+    const workspace = emptyHttpWorkspace()
+    workspace.environments[0].variables = [
+      { key: 'erpUrl', value: 'http://project3-api-erp.dearlovertech.com', enabled: true },
+      { key: 'erpGateway', value: 'http://project3-api-erp-gateway.dearlovertech.com', enabled: true },
+    ]
+    workspace.tabs[0].request.url = ''
+    getSetting.mockImplementation(async (key: string) => key === 'http.workspace' ? workspace : undefined)
+    const wrapper = mountTool()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="http-url-input"]').setValue('{{erpUrl}}/user/user-info/location')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="http-url-base-prefix"]').text()).toBe('http://project3-api-erp.dearlovertech.com')
+    expect(wrapper.get('[data-testid="http-url-base-prefix"]').attributes('title')).toContain('erpUrl')
+    expect((wrapper.get('[data-testid="http-url-input"]').element as HTMLInputElement).value).toBe('/user/user-info/location')
+  })
+
+  it('keeps the raw URL editable when one variable name prefixes another', async () => {
+    const workspace = emptyHttpWorkspace()
+    workspace.environments[0].variables = [
+      { key: 'erp', value: 'http://project3-api-erp.dearlovertech.com', enabled: true },
+      { key: 'erpGateWay', value: 'http://project3-api-erp-gateway.dearlovertech.com', enabled: true },
+    ]
+    workspace.tabs[0].request.url = ''
+    getSetting.mockImplementation(async (key: string) => key === 'http.workspace' ? workspace : undefined)
+    const wrapper = mountTool()
+    await flushPromises()
+
+    const urlInput = wrapper.get('[data-testid="http-url-input"]')
+    await urlInput.trigger('focus')
+    await urlInput.setValue('{{erp}}')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="http-url-base-prefix"]').exists()).toBe(false)
+    expect((wrapper.get('[data-testid="http-url-input"]').element as HTMLInputElement).value).toBe('{{erp}}')
+
+    await wrapper.get('[data-testid="http-url-input"]').setValue('{{erpGateWay}}/product/model')
+    await wrapper.get('[data-testid="http-url-input"]').trigger('blur')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="http-url-base-prefix"]').text()).toBe('http://project3-api-erp-gateway.dearlovertech.com')
+    expect(wrapper.get('[data-testid="http-url-base-prefix"]').attributes('title')).toContain('erpGateWay')
+    expect((wrapper.get('[data-testid="http-url-input"]').element as HTMLInputElement).value).toBe('/product/model')
+  })
+
+  it('opens collection requests in tabs and reuses an already open tab', async () => {
+    const collection = {
+      version: 3,
+      groups: [{ id: 'group-1', name: 'OMS', createdAt: 1 }],
+      requests: [
+        {
+          ...emptyHttpRequestDraft(),
+          id: 'request-1',
+          groupId: 'group-1',
+          name: '接口一',
+          url: 'https://api.example.com/one',
+          updatedAt: 1,
+        },
+        {
+          ...emptyHttpRequestDraft(),
+          id: 'request-2',
+          groupId: 'group-1',
+          name: '接口二',
+          url: 'https://api.example.com/two',
+          updatedAt: 1,
+        },
+      ],
+    }
+    getSetting.mockImplementation(async (key: string) => key === 'http.collections' ? collection : undefined)
+    const wrapper = mountTool()
+    await flushPromises()
+
+    await buttonContainingText(wrapper, '接口一').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="http-request-tab"]')).toHaveLength(1)
+
+    await buttonContainingText(wrapper, '接口二').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="http-request-tab"]')).toHaveLength(2)
+    expect((wrapper.get('input[placeholder="https://api.example.com/v1/..."]').element as HTMLInputElement).value).toBe('https://api.example.com/two')
+
+    await buttonContainingText(wrapper, '接口一').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="http-request-tab"]')).toHaveLength(2)
+    expect((wrapper.get('input[placeholder="https://api.example.com/v1/..."]').element as HTMLInputElement).value).toBe('https://api.example.com/one')
+  })
+
+  it('keeps the collection sidebar outside the request-tab column', async () => {
+    const wrapper = mountTool()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="http-workspace"]').classes()).toContain('md:grid-cols-[240px_minmax(0,1fr)]')
+    expect(wrapper.get('[data-testid="http-collection-sidebar"]').classes()).toContain('md:row-span-4')
+  })
+
+  it('sends selected files as multipart metadata to the native request command', async () => {
+    openFile.mockResolvedValue('D:\\fixtures\\avatar.png')
+    vi.mocked(invoke).mockResolvedValue({
+      ok: true,
+      status: 201,
+      statusText: 'Created',
+      headers: [],
+      body: '{}',
+      durationMs: 15,
+      sizeBytes: 2,
+      truncated: false,
+      finalUrl: 'https://httpbin.org/get',
+      error: null,
+    })
+    const wrapper = mountTool()
+    await flushPromises()
+
+    await buttonByText(wrapper, 'Body').trigger('click')
+    const bodyTypeSelect = wrapper.findAll('select').find(item => item.find('option[value="multipart"]').exists())!
+    await bodyTypeSelect.setValue('multipart')
+    const partKindSelect = wrapper.findAll('select').find(item => item.find('option[value="file"]').exists())!
+    await partKindSelect.setValue('file')
+    await wrapper.get('input[placeholder="字段名"]').setValue('avatar')
+    await buttonByText(wrapper, '选择').trigger('click')
+    await flushPromises()
+    await buttonByText(wrapper, 'Send').trigger('click')
+    await flushPromises()
+
+    const input = vi.mocked(invoke).mock.calls[0][1]!.input
+    expect(input).toMatchObject({
+      bodyType: 'multipart',
+      multipart: [{
+        kind: 'file',
+        name: 'avatar',
+        filePath: 'D:\\fixtures\\avatar.png',
+        fileName: 'avatar.png',
+        enabled: true,
+      }],
+    })
+  })
+
+  it('restores a persisted history request into the active tab', async () => {
+    const draft = emptyHttpRequestDraft()
+    draft.url = 'https://example.com/from-history'
+    getSetting.mockImplementation(async (key: string) => key === 'http.history'
+      ? [{
+          id: 'history-1',
+          at: 1,
+          status: 200,
+          statusText: 'OK',
+          durationMs: 12,
+          request: draft,
+        }]
+      : undefined)
+    const wrapper = mountTool()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="recent-request"]').trigger('click')
+    expect((wrapper.get('input[placeholder="https://api.example.com/v1/..."]').element as HTMLInputElement).value).toBe('https://example.com/from-history')
+  })
+})
+
 describe('http tool response viewer', () => {
   beforeEach(() => {
     getSetting.mockReset().mockResolvedValue(undefined)
     setSetting.mockReset().mockResolvedValue(undefined)
     vi.mocked(invoke).mockReset()
+    openFile.mockReset()
+    readTextFile.mockReset()
     saveFile.mockReset()
     writeTextFile.mockReset()
   })
@@ -266,6 +621,37 @@ describe('http tool response viewer', () => {
     expect(responseContent.classes()).toContain('response-selectable')
     expect(buttonByText(wrapper, '复制选中').attributes('disabled')).toBeDefined()
     expect(buttonByText(wrapper, '复制全部').attributes('disabled')).toBeDefined()
+  })
+
+  it('runs configured response assertions and shows visible results', async () => {
+    const workspace = emptyHttpWorkspace()
+    workspace.tabs[0].request.assertions = [
+      { id: 'assertion-1', type: 'status-equals', target: '', expected: '201', enabled: true },
+      { id: 'assertion-2', type: 'json-path-equals', target: '$.data.id', expected: '42', enabled: true },
+    ]
+    getSetting.mockImplementation(async (key: string) => key === 'http.workspace' ? workspace : undefined)
+    vi.mocked(invoke).mockResolvedValue({
+      ok: true,
+      status: 201,
+      statusText: 'Created',
+      headers: [],
+      body: '{"data":{"id":42}}',
+      durationMs: 10,
+      sizeBytes: 18,
+      truncated: false,
+      finalUrl: 'https://httpbin.org/get',
+      error: null,
+    })
+    const wrapper = mountTool()
+    await flushPromises()
+
+    await buttonByText(wrapper, 'Send').trigger('click')
+    await flushPromises()
+
+    const results = wrapper.get('[data-testid="http-assertion-results"]')
+    expect(results.text()).toContain('通过 · 状态码等于')
+    expect(results.text()).toContain('通过 · JSON Path 等于')
+    expect(buttonContainingText(wrapper, 'Tests').text()).toContain('2/2')
   })
 
   it('limits the rendered preview for large responses', async () => {
@@ -293,7 +679,7 @@ describe('http tool response viewer', () => {
     expect(responseContent.text()).not.toContain('x'.repeat(200_001))
   })
 
-  it('keeps only the five most recent requests in a fixed-height scroll area', async () => {
+  it('persists request history and keeps it in a fixed-height scroll area', async () => {
     vi.mocked(invoke).mockResolvedValue({
       ok: true,
       status: 200,
@@ -318,9 +704,10 @@ describe('http tool response viewer', () => {
 
     const history = wrapper.get('[data-testid="recent-requests"]')
     expect(history.classes()).toContain('h-[230px]')
-    expect(history.findAll('[data-testid="recent-request"]')).toHaveLength(5)
+    expect(history.findAll('[data-testid="recent-request"]')).toHaveLength(6)
     expect(history.text()).toContain('request-5')
-    expect(history.text()).not.toContain('request-0')
+    expect(history.text()).toContain('request-0')
+    expect(storedValue('http.history')).toHaveLength(6)
   })
 
   it('exports a redacted Markdown context through the save dialog', async () => {

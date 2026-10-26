@@ -1,17 +1,29 @@
 <script setup lang="ts">
-import type { HttpBodyType, HttpCollectionState, HttpKeyValue, SavedHttpRequest } from './httpCollections'
-import { ChevronDown, ChevronRight, Copy, CopyPlus, Download, Eraser, Folder, FolderPlus, Pencil, Save, Search, Trash2, X } from '@lucide/vue'
+import type { HttpAssertion, HttpAssertionResult, HttpAssertionType } from './httpAssertions'
+import type { HttpAuth, HttpBodyType, HttpCollectionState, HttpCookie, HttpKeyValue, HttpMultipartPart, SavedHttpRequest } from './httpCollections'
+import type { HttpExportFormat, HttpImportFormat } from './httpInterchange'
+import type { HttpHistoryEntry, HttpRequestDraft, HttpWorkspaceState } from './httpWorkspace'
+import { Braces, ChevronDown, ChevronRight, Copy, CopyPlus, Download, Eraser, FileUp, Folder, FolderPlus, History, Pencil, Plus, Save, Search, Settings2, Trash2, X } from '@lucide/vue'
 import { invoke } from '@tauri-apps/api/core'
-import { save as saveFile } from '@tauri-apps/plugin-dialog'
-import { writeTextFile } from '@tauri-apps/plugin-fs'
-import { computed, onMounted, ref } from 'vue'
+import { open as openFile, save as saveFile } from '@tauri-apps/plugin-dialog'
+import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import ToolShell from '@/components/ToolShell.vue'
 import { Button } from '@/components/ui/button'
 import { useToolDraft } from '@/composables/useToolDraft'
 import { useSettingsStore } from '@/stores/settings'
 import { buildHttpAiContext, httpAiExportFilename } from './httpAiExport'
 import {
+  emptyHttpAssertion,
+  evaluateHttpAssertions,
+  HTTP_ASSERTION_LABELS,
+} from './httpAssertions'
+import {
+  cloneHttpAuth,
+  cloneHttpCookies,
   cloneHttpKeyValues,
+  cloneHttpMultipart,
+  defaultHttpAuth,
   emptyHttpCollection,
   filterHttpRequests,
 
@@ -19,11 +31,29 @@ import {
   requestCountForGroup,
 
 } from './httpCollections'
+import {
+  exportHttpProject,
+  importHttpProject,
+  mergeImportedHttpProject,
+} from './httpInterchange'
+import {
+  captureResponseCookies,
+  cloneHttpRequestDraft,
+  cookiesForUrl,
+  createHttpRequestTab,
+  emptyHttpRequestDraft,
+  emptyHttpWorkspace,
+  interpolateHttpValue,
+  normalizeHttpHistory,
+  normalizeHttpWorkspace,
+  requestDraftFromSaved,
+  scopedHttpVariableMap,
+} from './httpWorkspace'
 
 type Kv = HttpKeyValue
 type BodyType = HttpBodyType
-type ReqTab = 'params' | 'headers' | 'body'
-type ResTab = 'body' | 'headers'
+type ReqTab = 'params' | 'auth' | 'headers' | 'cookies' | 'body' | 'variables' | 'tests'
+type ResTab = 'body' | 'headers' | 'tests'
 
 interface HttpResponse {
   ok: boolean
@@ -46,9 +76,12 @@ interface AiExportMetadata {
 
 const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as const
 const COLLECTIONS_KEY = 'http.collections'
+const WORKSPACE_KEY = 'http.workspace'
+const HISTORY_KEY = 'http.history'
 const AI_EXPORT_META_KEY = 'http.aiExportMetadata'
-const HISTORY_LIMIT = 5
+const HISTORY_LIMIT = 100
 const RESPONSE_RENDER_LIMIT = 200_000
+const assertionTypeOptions = Object.entries(HTTP_ASSERTION_LABELS) as Array<[HttpAssertionType, string]>
 const settings = useSettingsStore()
 
 /** Common request header names (Postman-like suggestions) */
@@ -139,6 +172,12 @@ const reqTab = useToolDraft<ReqTab>('http', 'requestTab', 'params')
 const resTab = useToolDraft<ResTab>('http', 'responseTab', 'body')
 const bodyType = useToolDraft<BodyType>('http', 'bodyType', 'none')
 const body = ref('')
+const auth = ref<HttpAuth>(defaultHttpAuth())
+const cookies = ref<HttpCookie[]>([])
+const multipart = ref<HttpMultipartPart[]>([])
+const variables = ref<HttpKeyValue[]>([])
+const assertions = ref<HttpAssertion[]>([])
+const assertionResults = ref<HttpAssertionResult[]>([])
 const timeoutMs = useToolDraft('http', 'timeoutMs', 30000)
 const loading = ref(false)
 const error = ref('')
@@ -170,7 +209,12 @@ const headers = ref<Kv[]>([
   { key: '', value: '', enabled: true },
 ])
 
-const history = ref<Array<{ method: string, url: string, status: number, at: number }>>([])
+const history = ref<HttpHistoryEntry[]>([])
+const workspace = ref<HttpWorkspaceState>(emptyHttpWorkspace())
+const workspaceReady = ref(false)
+const environmentDialogOpen = ref(false)
+const rawUrlEditing = ref(false)
+const tabRuntime = new Map<string, { response: HttpResponse | null, error: string, assertionResults: HttpAssertionResult[] }>()
 const collections = ref<HttpCollectionState>(emptyHttpCollection())
 const activeRequestId = ref('')
 const expandedGroups = ref(new Set<string>())
@@ -186,14 +230,54 @@ const groupDialogOpen = ref(false)
 const editingGroupId = ref('')
 const groupName = ref('')
 const pendingDelete = ref<{ kind: 'group' | 'request', id: string, name: string, count: number } | null>(null)
+const interchangeDialogOpen = ref(false)
+const interchangeMode = ref<'import' | 'export'>('import')
+const importFormat = ref<HttpImportFormat>('curl')
+const exportFormat = ref<HttpExportFormat>('curl')
+const interchangeContent = ref('')
+const interchangeError = ref('')
+const interchangeBusy = ref(false)
 
 const filteredRequests = computed(() => filterHttpRequests(collections.value.requests, collectionSearch.value))
 const activeRequest = computed(() => collections.value.requests.find(item => item.id === activeRequestId.value))
+const activeEnvironment = computed(() => workspace.value.environments.find(item => item.id === workspace.value.activeEnvironmentId))
+const resolvedUrlPrefix = computed(() => {
+  const match = url.value.match(/^\{\{([^{}]+)\}\}/)
+  if (!match)
+    return null
+  const name = match[1].trim()
+  if (!name)
+    return null
+  const values = scopedHttpVariableMap(
+    workspace.value.globalVariables,
+    activeEnvironment.value,
+    variables.value,
+  )
+  if (!Object.hasOwn(values, name) || !values[name].trim())
+    return null
+  return { name, token: match[0], value: values[name] }
+})
+const resolvedUrlPath = computed({
+  get: () => resolvedUrlPrefix.value ? url.value.slice(resolvedUrlPrefix.value.token.length) : url.value,
+  set: (value) => {
+    if (resolvedUrlPrefix.value)
+      url.value = `${resolvedUrlPrefix.value.token}${value}`
+    else
+      url.value = value
+  },
+})
 const visibleGroups = computed(() => collections.value.groups.filter(group => (
   !collectionSearch.value.trim()
   || group.name.toLocaleLowerCase().includes(collectionSearch.value.trim().toLocaleLowerCase())
   || filteredRequests.value.some(request => request.groupId === group.id)
 )))
+const enabledAssertionCount = computed(() => assertions.value.filter(item => item.enabled).length)
+const passedAssertionCount = computed(() => assertionResults.value.filter(item => item.passed).length)
+const interchangeExportPreview = computed(() => {
+  if (interchangeMode.value !== 'export')
+    return ''
+  return exportHttpProject(exportFormat.value, currentRequestDraft(), collections.value, workspace.value.globalVariables)
+})
 
 onMounted(async () => {
   try {
@@ -202,6 +286,19 @@ onMounted(async () => {
   }
   catch (cause) {
     collectionStatus.value = `读取接口集合失败：${errorMessage(cause)}`
+  }
+  try {
+    workspace.value = normalizeHttpWorkspace(await settings.getSetting<HttpWorkspaceState>(WORKSPACE_KEY))
+    history.value = normalizeHttpHistory(await settings.getSetting<HttpHistoryEntry[]>(HISTORY_KEY))
+    const activeTab = workspace.value.tabs.find(item => item.id === workspace.value.activeTabId) ?? workspace.value.tabs[0]
+    applyRequestDraft(activeTab.request)
+    activeRequestId.value = activeTab.activeRequestId
+  }
+  catch (cause) {
+    collectionStatus.value = `读取 HTTP 工作区失败：${errorMessage(cause)}`
+  }
+  finally {
+    workspaceReady.value = true
   }
   try {
     const metadata = await settings.getSetting<AiExportMetadata>(AI_EXPORT_META_KEY)
@@ -216,8 +313,409 @@ onMounted(async () => {
   }
 })
 
+let workspacePersistTimer: ReturnType<typeof setTimeout> | undefined
+
+watch([method, url, timeoutMs, query, headers, bodyType, body, auth, cookies, multipart, variables, assertions], () => {
+  if (!workspaceReady.value)
+    return
+  syncActiveTab()
+  if (workspacePersistTimer)
+    clearTimeout(workspacePersistTimer)
+  workspacePersistTimer = setTimeout(() => {
+    void persistWorkspace()
+  }, 250)
+}, { deep: true })
+
+onBeforeUnmount(() => {
+  if (workspacePersistTimer)
+    clearTimeout(workspacePersistTimer)
+  if (workspaceReady.value) {
+    syncActiveTab()
+    void persistWorkspace()
+  }
+})
+
 function emptyKv(): Kv {
   return { key: '', value: '', enabled: true }
+}
+
+function emptyCookie(): HttpCookie {
+  return {
+    id: crypto.randomUUID(),
+    name: '',
+    value: '',
+    domain: '',
+    path: '/',
+    enabled: true,
+  }
+}
+
+function emptyMultipartPart(kind: 'text' | 'file' = 'text'): HttpMultipartPart {
+  return {
+    id: crypto.randomUUID(),
+    kind,
+    name: '',
+    value: '',
+    filePath: '',
+    fileName: '',
+    contentType: '',
+    enabled: true,
+  }
+}
+
+function currentRequestDraft(): HttpRequestDraft {
+  return cloneHttpRequestDraft({
+    method: method.value,
+    url: url.value,
+    timeoutMs: timeoutMs.value,
+    query: query.value,
+    headers: headers.value,
+    bodyType: bodyType.value,
+    body: body.value,
+    auth: auth.value,
+    cookies: cookies.value,
+    multipart: multipart.value,
+    variables: variables.value,
+    assertions: assertions.value,
+  })
+}
+
+function applyRequestDraft(draft: HttpRequestDraft) {
+  const value = cloneHttpRequestDraft(draft)
+  method.value = value.method as typeof method.value
+  url.value = value.url
+  timeoutMs.value = value.timeoutMs
+  query.value = value.query.length ? value.query : [emptyKv()]
+  headers.value = value.headers.length ? value.headers : [emptyKv()]
+  bodyType.value = value.bodyType
+  body.value = value.body
+  auth.value = value.auth
+  cookies.value = value.cookies
+  multipart.value = value.multipart
+  variables.value = value.variables
+  assertions.value = value.assertions
+}
+
+function syncActiveTab() {
+  const tab = workspace.value.tabs.find(item => item.id === workspace.value.activeTabId)
+  if (!tab)
+    return
+  tab.request = currentRequestDraft()
+  tab.activeRequestId = activeRequestId.value
+  tab.updatedAt = Date.now()
+  if (activeRequest.value)
+    tab.title = activeRequest.value.name
+  else if (url.value.trim())
+    tab.title = defaultRequestName()
+}
+
+async function persistWorkspace() {
+  const snapshot = JSON.parse(JSON.stringify(workspace.value)) as HttpWorkspaceState
+  await settings.setSetting(WORKSPACE_KEY, snapshot)
+}
+
+async function selectRequestTab(tabId: string) {
+  if (tabId === workspace.value.activeTabId)
+    return
+  syncActiveTab()
+  tabRuntime.set(workspace.value.activeTabId, {
+    response: response.value,
+    error: error.value,
+    assertionResults: assertionResults.value,
+  })
+  const tab = workspace.value.tabs.find(item => item.id === tabId)
+  if (!tab)
+    return
+  workspace.value.activeTabId = tabId
+  applyRequestDraft(tab.request)
+  activeRequestId.value = tab.activeRequestId
+  const runtime = tabRuntime.get(tabId)
+  response.value = runtime?.response ?? null
+  error.value = runtime?.error ?? ''
+  assertionResults.value = runtime?.assertionResults ?? []
+  await persistWorkspace()
+}
+
+async function addRequestTab() {
+  syncActiveTab()
+  const tab = createHttpRequestTab()
+  workspace.value.tabs.push(tab)
+  workspace.value.activeTabId = tab.id
+  activeRequestId.value = ''
+  applyRequestDraft(tab.request)
+  response.value = null
+  error.value = ''
+  assertionResults.value = []
+  await persistWorkspace()
+}
+
+async function closeRequestTab(tabId: string) {
+  syncActiveTab()
+  const index = workspace.value.tabs.findIndex(item => item.id === tabId)
+  if (index < 0)
+    return
+  tabRuntime.delete(tabId)
+  workspace.value.tabs.splice(index, 1)
+  if (!workspace.value.tabs.length)
+    workspace.value.tabs.push(createHttpRequestTab())
+  if (workspace.value.activeTabId === tabId) {
+    const next = workspace.value.tabs[Math.min(index, workspace.value.tabs.length - 1)]
+    workspace.value.activeTabId = next.id
+    activeRequestId.value = next.activeRequestId
+    applyRequestDraft(next.request)
+    const runtime = tabRuntime.get(next.id)
+    response.value = runtime?.response ?? null
+    error.value = runtime?.error ?? ''
+    assertionResults.value = runtime?.assertionResults ?? []
+  }
+  await persistWorkspace()
+}
+
+async function selectEnvironment() {
+  await persistWorkspace()
+}
+
+function openVariableManager() {
+  environmentDialogOpen.value = true
+}
+
+function addEnvironment() {
+  const environment = {
+    id: crypto.randomUUID(),
+    name: `环境 ${workspace.value.environments.length + 1}`,
+    variables: [{ key: '', value: '', enabled: true }],
+  }
+  workspace.value.environments.push(environment)
+  workspace.value.activeEnvironmentId = environment.id
+}
+
+function removeEnvironment(environmentId: string) {
+  if (workspace.value.environments.length <= 1)
+    return
+  workspace.value.environments = workspace.value.environments.filter(item => item.id !== environmentId)
+  if (workspace.value.activeEnvironmentId === environmentId)
+    workspace.value.activeEnvironmentId = workspace.value.environments[0].id
+}
+
+function addEnvironmentVariable(environmentId: string) {
+  workspace.value.environments.find(item => item.id === environmentId)?.variables.push(emptyKv())
+}
+
+function removeEnvironmentVariable(environmentId: string, index: number) {
+  const environment = workspace.value.environments.find(item => item.id === environmentId)
+  if (!environment)
+    return
+  environment.variables.splice(index, 1)
+  if (!environment.variables.length)
+    environment.variables.push(emptyKv())
+}
+
+function addGlobalVariable() {
+  workspace.value.globalVariables.push(emptyKv())
+}
+
+function removeGlobalVariable(index: number) {
+  workspace.value.globalVariables.splice(index, 1)
+  if (!workspace.value.globalVariables.length)
+    workspace.value.globalVariables.push(emptyKv())
+}
+
+async function closeEnvironmentDialog() {
+  environmentDialogOpen.value = false
+  await persistWorkspace()
+}
+
+function addCookieRow() {
+  cookies.value.push(emptyCookie())
+}
+
+function removeCookieRow(index: number) {
+  cookies.value.splice(index, 1)
+}
+
+function addMultipartRow(kind: 'text' | 'file') {
+  multipart.value.push(emptyMultipartPart(kind))
+}
+
+function removeMultipartRow(index: number) {
+  multipart.value.splice(index, 1)
+}
+
+function addRequestVariable() {
+  variables.value.push(emptyKv())
+}
+
+function removeRequestVariable(index: number) {
+  variables.value.splice(index, 1)
+}
+
+function addAssertion() {
+  assertions.value.push(emptyHttpAssertion())
+}
+
+function removeAssertion(index: number) {
+  assertions.value.splice(index, 1)
+  assertionResults.value = []
+}
+
+function assertionNeedsTarget(type: HttpAssertionType) {
+  return ['header-exists', 'header-equals', 'header-contains', 'json-path-exists', 'json-path-equals'].includes(type)
+}
+
+function assertionNeedsExpected(type: HttpAssertionType) {
+  return !['header-exists', 'json-path-exists'].includes(type)
+}
+
+function onAssertionTypeChange(assertion: HttpAssertion) {
+  assertion.target = ''
+  assertion.expected = assertion.type === 'status-equals'
+    ? '200'
+    : assertion.type === 'duration-less-than' ? '500' : ''
+  assertionResults.value = []
+}
+
+async function chooseMultipartFile(index: number) {
+  const path = await openFile({ multiple: false, directory: false })
+  if (typeof path !== 'string')
+    return
+  const part = multipart.value[index]
+  if (!part)
+    return
+  part.filePath = path
+  part.fileName = path.split(/[\\/]/).at(-1) ?? ''
+}
+
+async function clearCookieJar() {
+  workspace.value.cookieJar = []
+  await persistWorkspace()
+}
+
+function openInterchangeDialog(mode: 'import' | 'export') {
+  interchangeMode.value = mode
+  interchangeError.value = ''
+  interchangeContent.value = ''
+  if (mode === 'import')
+    importFormat.value = 'curl'
+  else
+    exportFormat.value = 'curl'
+  interchangeDialogOpen.value = true
+}
+
+function closeInterchangeDialog() {
+  if (interchangeBusy.value)
+    return
+  interchangeDialogOpen.value = false
+  interchangeError.value = ''
+}
+
+function detectImportFormat(path: string, content: string): HttpImportFormat {
+  const lowerPath = path.toLocaleLowerCase()
+  const trimmed = content.trim()
+  if (trimmed.toLocaleLowerCase().startsWith('curl '))
+    return 'curl'
+  if (lowerPath.endsWith('.yaml') || lowerPath.endsWith('.yml'))
+    return 'openapi'
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>
+    if (parsed.openapi || parsed.swagger)
+      return 'openapi'
+    if (parsed.info && Array.isArray(parsed.item))
+      return 'postman'
+  }
+  catch {
+    // YAML OpenAPI is handled by the parser after format selection.
+  }
+  return importFormat.value
+}
+
+async function chooseInterchangeFile() {
+  const path = await openFile({
+    multiple: false,
+    directory: false,
+    filters: [{ name: 'API 文件', extensions: ['json', 'yaml', 'yml', 'txt', 'curl'] }],
+  })
+  if (typeof path !== 'string')
+    return
+  try {
+    const content = await readTextFile(path)
+    interchangeContent.value = content
+    importFormat.value = detectImportFormat(path, content)
+    interchangeError.value = ''
+  }
+  catch (cause) {
+    interchangeError.value = `读取文件失败：${errorMessage(cause)}`
+  }
+}
+
+async function runInterchangeImport() {
+  if (!interchangeContent.value.trim()) {
+    interchangeError.value = '请粘贴内容或选择文件'
+    return
+  }
+  interchangeBusy.value = true
+  interchangeError.value = ''
+  try {
+    const project = importHttpProject(interchangeContent.value, importFormat.value)
+    const result = mergeImportedHttpProject(collections.value, workspace.value.globalVariables, project)
+    collections.value = result.collection
+    workspace.value.globalVariables = result.globalVariables
+    expandedGroups.value = new Set(collections.value.groups.map(group => group.id))
+    await persistCollections(`已导入 ${result.groupCount} 个分组、${result.requestCount} 个接口`)
+    await persistWorkspace()
+    interchangeBusy.value = false
+    closeInterchangeDialog()
+  }
+  catch (cause) {
+    interchangeError.value = `导入失败：${errorMessage(cause)}`
+  }
+  finally {
+    interchangeBusy.value = false
+  }
+}
+
+function interchangeFilename(format: HttpExportFormat) {
+  if (format === 'curl')
+    return 'toolbox-request.curl.txt'
+  if (format === 'postman')
+    return 'toolbox.postman_collection.json'
+  if (format === 'openapi-yaml')
+    return 'toolbox.openapi.yaml'
+  return 'toolbox.openapi.json'
+}
+
+async function copyInterchangeExport() {
+  await navigator.clipboard.writeText(interchangeExportPreview.value)
+  collectionStatus.value = '导出内容已复制'
+}
+
+async function saveInterchangeExport() {
+  if (exportFormat.value !== 'curl' && !collections.value.requests.length) {
+    interchangeError.value = '接口集合为空，请先保存或导入接口'
+    return
+  }
+  interchangeBusy.value = true
+  interchangeError.value = ''
+  try {
+    const path = await saveFile({
+      defaultPath: interchangeFilename(exportFormat.value),
+      filters: [{
+        name: 'API 文件',
+        extensions: exportFormat.value === 'openapi-yaml' ? ['yaml'] : exportFormat.value === 'curl' ? ['txt'] : ['json'],
+      }],
+    })
+    if (!path)
+      return
+    await writeTextFile(path, interchangeExportPreview.value)
+    interchangeBusy.value = false
+    closeInterchangeDialog()
+    collectionStatus.value = `已导出：${path}`
+  }
+  catch (cause) {
+    interchangeError.value = `导出失败：${errorMessage(cause)}`
+  }
+  finally {
+    interchangeBusy.value = false
+  }
 }
 
 function addQueryRow() {
@@ -326,10 +824,116 @@ const bodyPlaceholder = computed(() => {
   return 'request body...'
 })
 
+function utf8Base64(value: string) {
+  const bytes = new TextEncoder().encode(value)
+  let binary = ''
+  for (const byte of bytes)
+    binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+function resolveRequestForSend() {
+  const variableValues = scopedHttpVariableMap(
+    workspace.value.globalVariables,
+    activeEnvironment.value,
+    variables.value,
+  )
+  const missing = new Set<string>()
+  const interpolate = (value: string) => {
+    const result = interpolateHttpValue(value, variableValues)
+    result.missing.forEach(name => missing.add(name))
+    return result.value
+  }
+  const resolvedUrl = interpolate(url.value.trim())
+  const resolvedQuery = cloneHttpKeyValues(query.value).map(row => ({
+    ...row,
+    key: interpolate(row.key),
+    value: interpolate(row.value),
+  }))
+  const resolvedHeaders = cloneHttpKeyValues(headers.value).map(row => ({
+    ...row,
+    key: interpolate(row.key),
+    value: interpolate(row.value),
+  }))
+  const resolvedBody = interpolate(body.value)
+  const resolvedMultipart = cloneHttpMultipart(multipart.value).map(part => ({
+    ...part,
+    name: interpolate(part.name),
+    value: interpolate(part.value),
+    filePath: interpolate(part.filePath),
+    fileName: interpolate(part.fileName),
+    contentType: interpolate(part.contentType),
+  }))
+  const resolvedAuth = cloneHttpAuth(auth.value)
+  resolvedAuth.token = interpolate(resolvedAuth.token)
+  resolvedAuth.username = interpolate(resolvedAuth.username)
+  resolvedAuth.password = interpolate(resolvedAuth.password)
+  resolvedAuth.key = interpolate(resolvedAuth.key)
+  resolvedAuth.value = interpolate(resolvedAuth.value)
+
+  const upsert = (rows: Kv[], key: string, value: string) => {
+    const existing = rows.find(row => row.key.trim().toLocaleLowerCase() === key.toLocaleLowerCase())
+    if (existing) {
+      existing.value = value
+      existing.enabled = true
+    }
+    else {
+      rows.push({ key, value, enabled: true })
+    }
+  }
+
+  if (resolvedAuth.type === 'bearer' && resolvedAuth.token) {
+    upsert(resolvedHeaders, 'Authorization', `Bearer ${resolvedAuth.token}`)
+  }
+  else if (resolvedAuth.type === 'basic') {
+    upsert(resolvedHeaders, 'Authorization', `Basic ${utf8Base64(`${resolvedAuth.username}:${resolvedAuth.password}`)}`)
+  }
+  else if (resolvedAuth.type === 'api-key' && resolvedAuth.key) {
+    if (resolvedAuth.addTo === 'query') {
+      upsert(resolvedQuery, resolvedAuth.key, resolvedAuth.value)
+    }
+    else {
+      upsert(resolvedHeaders, resolvedAuth.key, resolvedAuth.value)
+    }
+  }
+
+  const resolvedRequestCookies = cloneHttpCookies(cookies.value).map(cookie => ({
+    ...cookie,
+    name: interpolate(cookie.name),
+    value: interpolate(cookie.value),
+    domain: interpolate(cookie.domain),
+    path: interpolate(cookie.path),
+  }))
+  const cookieMap = new Map<string, HttpCookie>()
+  for (const cookie of cookiesForUrl(workspace.value.cookieJar, resolvedUrl))
+    cookieMap.set(cookie.name, cookie)
+  for (const cookie of cookiesForUrl(resolvedRequestCookies, resolvedUrl))
+    cookieMap.set(cookie.name, cookie)
+  if (cookieMap.size) {
+    const cookieHeader = [...cookieMap.values()].map(cookie => `${cookie.name}=${cookie.value}`).join('; ')
+    upsert(resolvedHeaders, 'Cookie', cookieHeader)
+  }
+
+  if (missing.size)
+    throw new Error(`当前环境缺少变量：${[...missing].join('、')}`)
+
+  return {
+    method: method.value,
+    url: resolvedUrl,
+    headers: resolvedHeaders,
+    query: resolvedQuery,
+    body: resolvedBody,
+    bodyType: bodyType.value,
+    multipart: resolvedMultipart,
+    timeoutMs: timeoutMs.value,
+  }
+}
+
 async function send() {
   error.value = ''
   exportStatus.value = ''
   response.value = null
+  assertionResults.value = []
   if (!url.value.trim()) {
     error.value = '请填写 URL'
     return
@@ -352,29 +956,27 @@ async function send() {
       }
     }
 
-    const res = await invoke<HttpResponse>('http_request', {
-      input: {
-        method: method.value,
-        url: url.value.trim(),
-        headers: headers.value,
-        query: query.value,
-        body: body.value,
-        bodyType: bodyType.value,
-        timeoutMs: timeoutMs.value,
-      },
-    })
+    const request = resolveRequestForSend()
+    const res = await invoke<HttpResponse>('http_request', { input: request })
     response.value = res
+    assertionResults.value = evaluateHttpAssertions(assertions.value, res)
     if (res.error)
       error.value = res.error
+    workspace.value.cookieJar = captureResponseCookies(res.headers, res.finalUrl, workspace.value.cookieJar)
     history.value.unshift({
-      method: method.value,
-      url: url.value.trim(),
+      id: crypto.randomUUID(),
       status: res.status,
+      statusText: res.statusText,
+      durationMs: res.durationMs,
       at: Date.now(),
+      request: currentRequestDraft(),
     })
     if (history.value.length > HISTORY_LIMIT)
       history.value.length = HISTORY_LIMIT
-    resTab.value = 'body'
+    await settings.setSetting(HISTORY_KEY, JSON.parse(JSON.stringify(history.value)))
+    syncActiveTab()
+    await persistWorkspace()
+    resTab.value = enabledAssertionCount.value ? 'tests' : 'body'
   }
   catch (e) {
     error.value = String(e)
@@ -477,15 +1079,26 @@ async function copySelectedResponse() {
     await navigator.clipboard.writeText(selectedResponseText.value)
 }
 
-function loadHistory(item: { method: string, url: string }) {
-  method.value = item.method as typeof method.value
-  url.value = item.url
+function loadHistory(item: HttpHistoryEntry) {
+  activeRequestId.value = ''
+  applyRequestDraft(item.request)
+  response.value = null
+  assertionResults.value = []
+  error.value = ''
+  syncActiveTab()
+}
+
+async function clearHistory() {
+  history.value = []
+  await settings.setSetting(HISTORY_KEY, [])
 }
 
 function onBodyTypeChange() {
   if (bodyType.value === 'json' && !body.value.trim()) {
     body.value = '{\n  \n}'
   }
+  if (bodyType.value === 'multipart' && !multipart.value.length)
+    multipart.value = [emptyMultipartPart()]
 }
 
 function prettyBody() {
@@ -586,32 +1199,48 @@ function toggleGroup(groupId: string) {
 
 function clearRequest() {
   activeRequestId.value = ''
-  method.value = 'GET'
-  url.value = ''
-  timeoutMs.value = 30000
-  query.value = [emptyKv()]
-  headers.value = [
-    { key: 'Accept', value: 'application/json', enabled: true },
-    emptyKv(),
-  ]
-  bodyType.value = 'none'
-  body.value = ''
+  const draft = emptyHttpRequestDraft()
+  draft.url = ''
+  applyRequestDraft(draft)
   response.value = null
+  assertionResults.value = []
   error.value = ''
   collectionStatus.value = '已清空请求编辑区'
 }
 
-function loadSavedRequest(saved: SavedHttpRequest) {
+async function loadSavedRequest(saved: SavedHttpRequest) {
+  syncActiveTab()
+  const openTab = workspace.value.tabs.find(item => item.activeRequestId === saved.id)
+  if (openTab) {
+    await selectRequestTab(openTab.id)
+    collectionStatus.value = `已切换到“${saved.name}”`
+    return
+  }
+
+  let tab = workspace.value.tabs.find(item => item.id === workspace.value.activeTabId)
+  const blankDraft = emptyHttpRequestDraft()
+  const canReuseActiveTab = tab
+    && !tab.activeRequestId
+    && (tab.request.url === '' || JSON.stringify(tab.request) === JSON.stringify(blankDraft))
+  if (!canReuseActiveTab) {
+    tab = createHttpRequestTab(saved.name)
+    workspace.value.tabs.push(tab)
+    workspace.value.activeTabId = tab.id
+  }
+
+  const draft = requestDraftFromSaved(saved)
   activeRequestId.value = saved.id
-  method.value = saved.method as typeof method.value
-  url.value = saved.url
-  timeoutMs.value = saved.timeoutMs
-  query.value = cloneHttpKeyValues(saved.query.length ? saved.query : [emptyKv()])
-  headers.value = cloneHttpKeyValues(saved.headers.length ? saved.headers : [emptyKv()])
-  bodyType.value = saved.bodyType
-  body.value = saved.body
+  applyRequestDraft(draft)
   response.value = null
+  assertionResults.value = []
   error.value = ''
+  if (tab) {
+    tab.title = saved.name
+    tab.activeRequestId = saved.id
+    tab.request = cloneHttpRequestDraft(draft)
+  }
+  syncActiveTab()
+  await persistWorkspace()
   collectionStatus.value = `已载入“${saved.name}”`
 }
 
@@ -664,6 +1293,11 @@ async function saveRequestFromDialog() {
     headers: cloneHttpKeyValues(headers.value),
     bodyType: bodyType.value,
     body: body.value,
+    auth: cloneHttpAuth(auth.value),
+    cookies: cloneHttpCookies(cookies.value),
+    multipart: cloneHttpMultipart(multipart.value),
+    variables: cloneHttpKeyValues(variables.value),
+    assertions: assertions.value.map(assertion => ({ ...assertion })),
     updatedAt: Date.now(),
   }
   collections.value.requests = [
@@ -674,6 +1308,8 @@ async function saveRequestFromDialog() {
   expandedGroups.value = new Set([...expandedGroups.value, saved.groupId])
   try {
     await persistCollections(saveMode.value === 'update' ? `已更新接口“${name}”` : `已另存为接口“${name}”`)
+    syncActiveTab()
+    await persistWorkspace()
     closeSaveDialog()
   }
   catch (cause) {
@@ -728,9 +1364,30 @@ function methodClass(value: string) {
 
 <template>
   <ToolShell title="接口调试" desc="类 Postman：发 HTTP 请求、看状态码 / 耗时 / Headers / Body（无 CORS）">
-    <div class="flex h-full min-h-0 flex-col gap-3">
+    <div data-testid="http-workspace" class="grid h-full min-h-0 gap-3 md:grid-cols-[240px_minmax(0,1fr)] md:grid-rows-[auto_auto_minmax(0,1fr)_auto]">
+      <div class="flex min-h-9 max-w-full items-end gap-1 overflow-x-auto border-b border-border md:col-start-2 md:row-start-1">
+        <button
+          v-for="tab in workspace.tabs"
+          :key="tab.id"
+          type="button"
+          data-testid="http-request-tab"
+          class="group/tab flex h-9 min-w-[150px] max-w-[240px] items-center gap-2 border-x border-t px-3 text-left text-xs"
+          :class="workspace.activeTabId === tab.id ? 'border-border bg-card font-medium' : 'border-transparent text-muted-foreground hover:bg-muted/50'"
+          @click="selectRequestTab(tab.id)"
+        >
+          <span class="font-mono text-[10px] font-bold" :class="methodClass(tab.request.method)">{{ tab.request.method }}</span>
+          <span class="min-w-0 flex-1 truncate">{{ tab.title }}</span>
+          <span class="grid size-5 shrink-0 place-items-center rounded opacity-0 hover:bg-muted group-hover/tab:opacity-100" title="关闭标签" @click.stop="closeRequestTab(tab.id)">
+            <X class="size-3" />
+          </span>
+        </button>
+        <Button type="button" size="sm" variant="ghost" class="mb-0.5 size-8 shrink-0 p-0" title="新建请求标签" @click="addRequestTab">
+          <Plus class="size-4" />
+        </Button>
+      </div>
+
       <!-- URL bar -->
-      <div class="flex flex-wrap gap-2">
+      <div class="flex min-w-0 flex-wrap gap-2 md:col-start-2 md:row-start-2">
         <select
           v-model="method"
           class="h-9 w-[110px] rounded-md border border-input bg-background px-2 font-mono text-sm font-semibold"
@@ -739,12 +1396,43 @@ function methodClass(value: string) {
             {{ m }}
           </option>
         </select>
-        <input
-          v-model="url"
-          class="h-9 min-w-[220px] flex-1 rounded-md border border-input bg-background px-3 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          placeholder="https://api.example.com/v1/..."
-          @keydown.enter.prevent="send"
-        >
+        <div class="relative flex h-9 min-w-[220px] flex-1 overflow-hidden rounded-md border border-input bg-background focus-within:ring-2 focus-within:ring-ring">
+          <span
+            v-if="resolvedUrlPrefix && !rawUrlEditing"
+            data-testid="http-url-base-prefix"
+            class="flex h-full max-w-[55%] shrink-0 items-center truncate border-r border-input bg-muted/60 px-3 font-mono text-xs text-foreground"
+            :title="`${resolvedUrlPrefix.name} · ${resolvedUrlPrefix.value}`"
+          >
+            {{ resolvedUrlPrefix.value }}
+          </span>
+          <input
+            v-if="resolvedUrlPrefix && !rawUrlEditing"
+            v-model="resolvedUrlPath"
+            data-testid="http-url-input"
+            class="h-full min-w-0 flex-1 border-0 bg-transparent px-3 pr-10 font-mono text-sm outline-none"
+            placeholder="/v1/..."
+            @keydown.enter.prevent="send"
+          >
+          <input
+            v-else
+            v-model="url"
+            data-testid="http-url-input"
+            class="h-full min-w-0 flex-1 border-0 bg-transparent px-3 pr-10 font-mono text-sm outline-none"
+            placeholder="https://api.example.com/v1/..."
+            @focus="rawUrlEditing = true"
+            @blur="rawUrlEditing = false"
+            @keydown.enter.prevent="send"
+          >
+          <button
+            type="button"
+            class="absolute right-1 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+            :class="resolvedUrlPrefix ? 'bg-muted text-foreground' : ''"
+            title="编辑变量"
+            @click="openVariableManager"
+          >
+            <Braces class="size-4" />
+          </button>
+        </div>
         <input
           v-model.number="timeoutMs"
           type="number"
@@ -753,6 +1441,27 @@ function methodClass(value: string) {
           title="超时 (ms)"
           class="h-9 w-[110px] rounded-md border border-input bg-background px-2 font-mono text-sm"
         >
+        <select
+          v-model="workspace.activeEnvironmentId"
+          class="h-9 min-w-[126px] rounded-md border border-input bg-background px-2 text-sm"
+          title="当前请求环境"
+          @change="selectEnvironment"
+        >
+          <option v-for="environment in workspace.environments" :key="environment.id" :value="environment.id">
+            {{ environment.name }}
+          </option>
+        </select>
+        <Button type="button" size="sm" variant="ghost" class="size-8 p-0" title="管理环境变量" @click="environmentDialogOpen = true">
+          <Settings2 class="size-4" />
+        </Button>
+        <Button size="sm" variant="outline" class="gap-2" title="导入 cURL、Postman Collection 或 OpenAPI" @click="openInterchangeDialog('import')">
+          <FileUp class="size-4" />
+          导入
+        </Button>
+        <Button size="sm" variant="outline" class="gap-2" title="导出当前请求或接口集合" @click="openInterchangeDialog('export')">
+          <Download class="size-4" />
+          导出
+        </Button>
         <Button size="sm" variant="outline" class="gap-2" title="保留当前配置并另存为新接口" @click="openSaveDialog('create')">
           <CopyPlus class="size-4" />
           另存为
@@ -769,8 +1478,8 @@ function methodClass(value: string) {
         </Button>
       </div>
 
-      <div class="grid min-h-0 flex-1 gap-3 xl:grid-cols-[260px_minmax(0,1fr)]">
-        <aside class="flex max-h-72 min-h-0 flex-col overflow-hidden rounded-md border border-border bg-background xl:max-h-none">
+      <div class="contents">
+        <aside data-testid="http-collection-sidebar" class="flex max-h-72 min-h-0 flex-col overflow-hidden rounded-md border border-border bg-background md:col-start-1 md:row-start-1 md:row-span-4 md:max-h-none">
           <div class="border-b border-border p-3">
             <div class="mb-2 flex items-center justify-between gap-2">
               <div>
@@ -841,19 +1550,23 @@ function methodClass(value: string) {
           </div>
         </aside>
 
-        <div class="grid min-h-0 gap-3 lg:grid-cols-2">
+        <div class="grid min-h-0 min-w-0 gap-3 md:col-start-2 md:row-start-3 lg:grid-cols-2">
           <!-- Request -->
-          <div class="flex min-h-0 flex-col rounded-xl border border-border bg-card">
-            <div class="flex items-center gap-1 border-b border-border px-2 pt-2">
+          <div class="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card">
+            <div class="flex items-center gap-1 overflow-x-auto border-b border-border px-2 pt-2">
               <button
                 v-for="t in ([
                   ['params', 'Params'],
+                  ['auth', 'Auth'],
                   ['headers', 'Headers'],
+                  ['cookies', 'Cookies'],
                   ['body', 'Body'],
+                  ['variables', '变量'],
+                  ['tests', '断言'],
                 ] as const)"
                 :key="t[0]"
                 type="button"
-                class="rounded-t-md px-3 py-2 text-sm"
+                class="shrink-0 whitespace-nowrap rounded-t-md px-2 py-2 text-xs"
                 :class="reqTab === t[0] ? 'bg-muted font-medium' : 'text-muted-foreground hover:text-foreground'"
                 @click="reqTab = t[0]"
               >
@@ -886,6 +1599,66 @@ function methodClass(value: string) {
                 <Button type="button" size="sm" variant="outline" @click.stop="addQueryRow()">
                   + 参数
                 </Button>
+              </div>
+
+              <div v-else-if="reqTab === 'auth'" class="space-y-4">
+                <label class="grid gap-1.5 text-xs font-medium">
+                  鉴权方式
+                  <select v-model="auth.type" class="h-9 rounded-md border border-input bg-background px-2 text-sm font-normal">
+                    <option value="none">
+                      无鉴权
+                    </option>
+                    <option value="bearer">
+                      Bearer Token
+                    </option>
+                    <option value="basic">
+                      Basic Auth
+                    </option>
+                    <option value="api-key">
+                      API Key
+                    </option>
+                  </select>
+                </label>
+                <label v-if="auth.type === 'bearer'" class="grid gap-1.5 text-xs font-medium">
+                  Token
+                  <input v-model="auth.token" type="password" autocomplete="off" class="h-9 rounded-md border border-input bg-background px-3 font-mono text-sm font-normal" placeholder="可使用 {{token}}">
+                </label>
+                <template v-else-if="auth.type === 'basic'">
+                  <label class="grid gap-1.5 text-xs font-medium">
+                    用户名
+                    <input v-model="auth.username" autocomplete="off" class="h-9 rounded-md border border-input bg-background px-3 text-sm font-normal" placeholder="可使用 {{username}}">
+                  </label>
+                  <label class="grid gap-1.5 text-xs font-medium">
+                    密码
+                    <input v-model="auth.password" type="password" autocomplete="new-password" class="h-9 rounded-md border border-input bg-background px-3 text-sm font-normal" placeholder="可使用 {{password}}">
+                  </label>
+                </template>
+                <template v-else-if="auth.type === 'api-key'">
+                  <div class="grid gap-3 sm:grid-cols-[1fr_1fr_120px]">
+                    <label class="grid gap-1.5 text-xs font-medium">
+                      Key
+                      <input v-model="auth.key" class="h-9 rounded-md border border-input bg-background px-3 font-mono text-sm font-normal">
+                    </label>
+                    <label class="grid gap-1.5 text-xs font-medium">
+                      Value
+                      <input v-model="auth.value" type="password" autocomplete="off" class="h-9 rounded-md border border-input bg-background px-3 font-mono text-sm font-normal">
+                    </label>
+                    <label class="grid gap-1.5 text-xs font-medium">
+                      添加到
+                      <select v-model="auth.addTo" class="h-9 rounded-md border border-input bg-background px-2 text-sm font-normal">
+                        <option value="header">
+                          Header
+                        </option>
+                        <option value="query">
+                          Query
+                        </option>
+                      </select>
+                    </label>
+                  </div>
+                </template>
+                <p class="text-xs text-muted-foreground">
+                  鉴权配置保存在本机工作区和已保存接口中，不会同步到云端。
+                </p>
               </div>
 
               <div v-else-if="reqTab === 'headers'" class="space-y-2">
@@ -947,7 +1720,41 @@ function methodClass(value: string) {
                 </Button>
               </div>
 
-              <div v-else class="space-y-2">
+              <div v-else-if="reqTab === 'cookies'" class="space-y-3">
+                <div class="flex items-center justify-between gap-3">
+                  <p class="text-xs text-muted-foreground">
+                    请求 Cookie 会覆盖同名自动 Cookie；响应中的 Set-Cookie 会保存在本地 Cookie Jar。
+                  </p>
+                  <Button type="button" size="sm" variant="outline" @click="addCookieRow">
+                    + Cookie
+                  </Button>
+                </div>
+                <div
+                  v-for="(cookie, idx) in cookies"
+                  :key="cookie.id"
+                  class="grid grid-cols-[24px_1fr_1fr_1fr_80px_32px] items-center gap-2"
+                >
+                  <input v-model="cookie.enabled" type="checkbox" class="size-4">
+                  <input v-model="cookie.name" placeholder="Name" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                  <input v-model="cookie.value" placeholder="Value" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                  <input v-model="cookie.domain" placeholder="Domain（可留空）" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                  <input v-model="cookie.path" placeholder="/" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                  <Button type="button" size="sm" variant="ghost" class="h-8 px-2" @click="removeCookieRow(idx)">
+                    ×
+                  </Button>
+                </div>
+                <p v-if="!cookies.length" class="text-sm text-muted-foreground">
+                  当前请求没有专属 Cookie。
+                </p>
+                <div class="flex items-center justify-between border-t border-border pt-3">
+                  <span class="text-xs text-muted-foreground">Cookie Jar：{{ workspace.cookieJar.length }} 条</span>
+                  <Button type="button" size="sm" variant="ghost" :disabled="!workspace.cookieJar.length" @click="clearCookieJar">
+                    清空 Cookie Jar
+                  </Button>
+                </div>
+              </div>
+
+              <div v-else-if="reqTab === 'body'" class="space-y-2">
                 <div class="flex flex-wrap items-center gap-2">
                   <select
                     v-model="bodyType"
@@ -966,8 +1773,12 @@ function methodClass(value: string) {
                     <option value="form">
                       x-www-form-urlencoded
                     </option>
+                    <option value="multipart">
+                      multipart/form-data
+                    </option>
                   </select>
                   <Button
+                    v-if="bodyType === 'json'"
                     size="sm"
                     variant="outline"
                     @click="prettyBody"
@@ -976,20 +1787,124 @@ function methodClass(value: string) {
                   </Button>
                 </div>
                 <textarea
-                  v-if="bodyType !== 'none'"
+                  v-if="bodyType !== 'none' && bodyType !== 'multipart'"
                   v-model="body"
                   class="min-h-[260px] w-full resize-y rounded-md border border-input bg-background p-3 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   :placeholder="bodyPlaceholder"
                 />
+                <div v-else-if="bodyType === 'multipart'" class="space-y-2">
+                  <div
+                    v-for="(part, idx) in multipart"
+                    :key="part.id"
+                    class="grid grid-cols-[24px_88px_minmax(100px,0.8fr)_minmax(160px,1.4fr)_32px] items-center gap-2"
+                  >
+                    <input v-model="part.enabled" type="checkbox" class="size-4">
+                    <select v-model="part.kind" class="h-8 rounded-md border border-input bg-background px-2 text-xs">
+                      <option value="text">
+                        文本
+                      </option>
+                      <option value="file">
+                        文件
+                      </option>
+                    </select>
+                    <input v-model="part.name" placeholder="字段名" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                    <input v-if="part.kind === 'text'" v-model="part.value" placeholder="值，可使用 {{variable}}" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                    <div v-else class="flex min-w-0 gap-2">
+                      <input v-model="part.filePath" readonly placeholder="选择文件" class="h-8 min-w-0 flex-1 rounded-md border border-input bg-muted/30 px-2 font-mono text-xs">
+                      <Button type="button" size="sm" variant="outline" class="h-8 gap-1.5" @click="chooseMultipartFile(idx)">
+                        <FileUp class="size-3.5" />
+                        选择
+                      </Button>
+                    </div>
+                    <Button type="button" size="sm" variant="ghost" class="h-8 px-2" @click="removeMultipartRow(idx)">
+                      ×
+                    </Button>
+                  </div>
+                  <div class="flex gap-2">
+                    <Button type="button" size="sm" variant="outline" @click="addMultipartRow('text')">
+                      + 文本字段
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" @click="addMultipartRow('file')">
+                      + 文件字段
+                    </Button>
+                  </div>
+                </div>
                 <p v-else class="text-sm text-muted-foreground">
                   当前无 Body（GET/HEAD 会忽略 Body）
+                </p>
+              </div>
+
+              <div v-else-if="reqTab === 'variables'" class="space-y-3">
+                <p class="text-xs text-muted-foreground">
+                  请求变量优先级最高，会覆盖当前环境和全局范围中的同名变量。
+                </p>
+                <div
+                  v-for="(variable, idx) in variables"
+                  :key="idx"
+                  class="grid grid-cols-[24px_1fr_1fr_32px] items-center gap-2"
+                >
+                  <input v-model="variable.enabled" type="checkbox" class="size-4">
+                  <input v-model="variable.key" placeholder="变量名" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                  <input v-model="variable.value" placeholder="变量值" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                  <Button type="button" size="sm" variant="ghost" class="h-8 px-2" @click="removeRequestVariable(idx)">
+                    ×
+                  </Button>
+                </div>
+                <p v-if="!variables.length" class="text-sm text-muted-foreground">
+                  当前请求没有专属变量。
+                </p>
+                <Button type="button" size="sm" variant="outline" @click="addRequestVariable">
+                  + 请求变量
+                </Button>
+              </div>
+
+              <div v-else class="space-y-3">
+                <div class="flex items-center justify-between gap-3">
+                  <p class="text-xs text-muted-foreground">
+                    请求完成后自动运行已启用的断言。
+                  </p>
+                  <Button type="button" size="sm" variant="outline" @click="addAssertion">
+                    + 断言
+                  </Button>
+                </div>
+                <div
+                  v-for="(assertion, idx) in assertions"
+                  :key="assertion.id"
+                  class="grid grid-cols-[24px_minmax(140px,0.8fr)_minmax(120px,1fr)_minmax(120px,1fr)_32px] items-center gap-2"
+                >
+                  <input v-model="assertion.enabled" type="checkbox" class="size-4">
+                  <select v-model="assertion.type" class="h-8 rounded-md border border-input bg-background px-2 text-xs" @change="onAssertionTypeChange(assertion)">
+                    <option v-for="[value, label] in assertionTypeOptions" :key="value" :value="value">
+                      {{ label }}
+                    </option>
+                  </select>
+                  <input
+                    v-if="assertionNeedsTarget(assertion.type)"
+                    v-model="assertion.target"
+                    :placeholder="assertion.type.startsWith('header') ? 'Header 名' : 'JSON Path，例如 $.data.id'"
+                    class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
+                  >
+                  <span v-else class="px-2 text-xs text-muted-foreground">—</span>
+                  <input
+                    v-if="assertionNeedsExpected(assertion.type)"
+                    v-model="assertion.expected"
+                    :placeholder="assertion.type === 'duration-less-than' ? '毫秒' : '期望值'"
+                    class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs"
+                  >
+                  <span v-else class="px-2 text-xs text-muted-foreground">—</span>
+                  <Button type="button" size="sm" variant="ghost" class="h-8 px-2" @click="removeAssertion(idx)">
+                    ×
+                  </Button>
+                </div>
+                <p v-if="!assertions.length" class="text-sm text-muted-foreground">
+                  尚未配置响应断言。
                 </p>
               </div>
             </div>
           </div>
 
           <!-- Response -->
-          <div class="flex min-h-0 flex-col rounded-xl border border-border bg-card">
+          <div class="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card">
             <div class="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
               <div class="flex flex-wrap items-center gap-3 text-sm">
                 <span class="font-mono font-semibold" :class="statusClass">
@@ -1004,7 +1919,7 @@ function methodClass(value: string) {
                   {{ response.durationMs }} ms · {{ sizeLabel }}
                 </span>
               </div>
-              <div class="flex gap-1">
+              <div class="flex min-w-0 flex-wrap justify-end gap-1">
                 <button
                   type="button"
                   class="rounded-md px-2 py-1 text-sm"
@@ -1020,6 +1935,17 @@ function methodClass(value: string) {
                   @click="resTab = 'headers'"
                 >
                   Headers
+                </button>
+                <button
+                  type="button"
+                  class="rounded-md px-2 py-1 text-sm"
+                  :class="resTab === 'tests' ? 'bg-muted font-medium' : 'text-muted-foreground'"
+                  @click="resTab = 'tests'"
+                >
+                  Tests
+                  <span v-if="assertionResults.length" class="ml-1 text-xs">
+                    {{ passedAssertionCount }}/{{ assertionResults.length }}
+                  </span>
                 </button>
                 <Button size="sm" variant="ghost" class="gap-1.5" :disabled="!selectedResponseText" title="复制鼠标选中的响应文本" @click="copySelectedResponse">
                   <Copy class="size-3.5" />
@@ -1060,7 +1986,7 @@ function methodClass(value: string) {
                 class="whitespace-pre-wrap break-all rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed"
               >{{ responseBodyPreview || (loading ? '请求中…' : '—') }}</pre>
 
-              <div v-else class="space-y-1">
+              <div v-else-if="resTab === 'headers'" class="space-y-1">
                 <div
                   v-for="(h, i) in (response?.headers || [])"
                   :key="i"
@@ -1073,15 +1999,41 @@ function methodClass(value: string) {
                   —
                 </p>
               </div>
+              <div v-else class="space-y-2" data-testid="http-assertion-results">
+                <div
+                  v-for="result in assertionResults"
+                  :key="result.id"
+                  class="rounded-md border px-3 py-2 text-sm"
+                  :class="result.passed
+                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                    : 'border-destructive/30 bg-destructive/5 text-destructive'"
+                >
+                  <div class="font-medium">
+                    {{ result.passed ? '通过' : '失败' }} · {{ result.label }}
+                  </div>
+                  <div class="mt-1 break-all font-mono text-xs opacity-80">
+                    {{ result.message }}
+                  </div>
+                </div>
+                <p v-if="!assertionResults.length" class="text-sm text-muted-foreground">
+                  {{ enabledAssertionCount ? '发送请求后查看断言结果。' : '请先在请求的“断言”页签中添加测试。' }}
+                </p>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
       <!-- History -->
-      <div v-if="history.length" data-testid="recent-requests" class="flex h-[230px] shrink-0 flex-col rounded-xl border border-border p-3">
-        <div class="mb-2 shrink-0 text-xs font-medium text-muted-foreground">
-          最近请求
+      <div v-if="history.length" data-testid="recent-requests" class="flex h-[230px] shrink-0 flex-col rounded-xl border border-border p-3 md:col-start-2 md:row-start-4">
+        <div class="mb-2 flex shrink-0 items-center justify-between gap-3">
+          <span class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <History class="size-3.5" />
+            请求历史 · {{ history.length }}
+          </span>
+          <Button type="button" size="sm" variant="ghost" class="h-7 px-2 text-xs" @click="clearHistory">
+            清空历史
+          </Button>
         </div>
         <div class="min-h-0 flex-1 overflow-auto">
           <div class="flex flex-wrap content-start gap-2">
@@ -1093,12 +2045,84 @@ function methodClass(value: string) {
               class="rounded-md border border-border bg-muted/30 px-2 py-1 font-mono text-xs hover:bg-muted"
               @click="loadHistory(h)"
             >
-              <span class="font-semibold">{{ h.method }}</span>
+              <span class="font-semibold">{{ h.request.method }}</span>
               <span class="mx-1 text-muted-foreground">{{ h.status || 'ERR' }}</span>
-              <span class="max-w-[220px] truncate align-bottom">{{ h.url }}</span>
+              <span class="max-w-[220px] truncate align-bottom">{{ h.request.url }}</span>
             </button>
           </div>
         </div>
+      </div>
+
+      <div v-if="environmentDialogOpen" data-testid="environment-dialog-overlay" class="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4">
+        <section class="flex max-h-[80vh] w-full max-w-3xl flex-col rounded-md border border-border bg-background shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="environment-dialog-title">
+          <div class="flex items-center justify-between border-b border-border px-4 py-3">
+            <div>
+              <h2 id="environment-dialog-title" class="flex items-center gap-2 text-sm font-semibold">
+                <Braces class="size-4" />
+                变量管理
+              </h2>
+              <p class="mt-0.5 text-xs text-muted-foreground">
+                在 URL、Params、Headers、Auth、Cookies 和 Body 中使用 <code v-pre>{{ variable }}</code>；优先级：请求 &gt; 环境 &gt; 全局。
+              </p>
+            </div>
+            <Button type="button" size="sm" variant="ghost" class="size-8 p-0" title="关闭" @click="closeEnvironmentDialog">
+              <X class="size-4" />
+            </Button>
+          </div>
+          <div class="min-h-0 flex-1 overflow-auto p-4">
+            <div class="mb-4 border-b border-border pb-4">
+              <div class="mb-2 text-sm font-semibold">
+                全局变量
+              </div>
+              <div class="space-y-2">
+                <div v-for="(variable, idx) in workspace.globalVariables" :key="idx" class="grid grid-cols-[24px_1fr_1fr_32px] items-center gap-2">
+                  <input v-model="variable.enabled" type="checkbox" class="size-4">
+                  <input v-model="variable.key" placeholder="变量名，例如 tenantId" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                  <input v-model="variable.value" placeholder="变量值" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                  <Button type="button" size="sm" variant="ghost" class="h-8 px-2" @click="removeGlobalVariable(idx)">
+                    ×
+                  </Button>
+                </div>
+              </div>
+              <Button type="button" size="sm" variant="outline" class="mt-2" @click="addGlobalVariable">
+                + 全局变量
+              </Button>
+            </div>
+            <div class="mb-2 text-sm font-semibold">
+              环境变量
+            </div>
+            <div v-for="environment in workspace.environments" :key="environment.id" class="mb-4 border-b border-border pb-4 last:mb-0 last:border-0 last:pb-0">
+              <div class="mb-2 flex items-center gap-2">
+                <input v-model="environment.name" class="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm font-medium" aria-label="环境名称">
+                <Button type="button" size="sm" variant="ghost" class="size-8 p-0 text-muted-foreground" title="删除环境" :disabled="workspace.environments.length <= 1" @click="removeEnvironment(environment.id)">
+                  <Trash2 class="size-4" />
+                </Button>
+              </div>
+              <div class="space-y-2">
+                <div v-for="(variable, idx) in environment.variables" :key="idx" class="grid grid-cols-[24px_1fr_1fr_32px] items-center gap-2">
+                  <input v-model="variable.enabled" type="checkbox" class="size-4">
+                  <input v-model="variable.key" placeholder="变量名，例如 baseUrl" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                  <input v-model="variable.value" placeholder="变量值" class="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs">
+                  <Button type="button" size="sm" variant="ghost" class="h-8 px-2" @click="removeEnvironmentVariable(environment.id, idx)">
+                    ×
+                  </Button>
+                </div>
+              </div>
+              <Button type="button" size="sm" variant="outline" class="mt-2" @click="addEnvironmentVariable(environment.id)">
+                + 变量
+              </Button>
+            </div>
+            <Button type="button" size="sm" variant="outline" class="gap-2" @click="addEnvironment">
+              <Plus class="size-4" />
+              新建环境
+            </Button>
+          </div>
+          <div class="flex justify-end border-t border-border px-4 py-3">
+            <Button type="button" size="sm" @click="closeEnvironmentDialog">
+              完成
+            </Button>
+          </div>
+        </section>
       </div>
 
       <div v-if="groupDialogOpen" data-testid="group-dialog-overlay" class="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4">
@@ -1195,6 +2219,106 @@ function methodClass(value: string) {
             <Button type="button" size="sm" class="gap-2" :disabled="savingRequest || !saveName.trim() || !saveGroupId" @click.stop="saveRequestFromDialog">
               <Save class="size-4" />
               {{ savingRequest ? '保存中…' : saveMode === 'update' ? '更新' : '另存为' }}
+            </Button>
+          </div>
+        </section>
+      </div>
+
+      <div v-if="interchangeDialogOpen" data-testid="interchange-dialog-overlay" class="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4">
+        <section class="flex max-h-[82vh] w-full max-w-3xl flex-col rounded-md border border-border bg-background shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="interchange-title">
+          <div class="flex items-center justify-between border-b border-border px-4 py-3">
+            <div>
+              <h2 id="interchange-title" class="text-sm font-semibold">
+                {{ interchangeMode === 'import' ? '导入 API 项目' : '导出 API 项目' }}
+              </h2>
+              <p class="mt-0.5 text-xs text-muted-foreground">
+                {{ interchangeMode === 'import' ? '导入内容会追加到本地接口集合，不覆盖已有接口。' : 'cURL 导出当前请求，Postman / OpenAPI 导出全部已保存接口。' }}
+              </p>
+            </div>
+            <Button type="button" size="sm" variant="ghost" class="size-8 p-0" title="关闭" :disabled="interchangeBusy" @click="closeInterchangeDialog">
+              <X class="size-4" />
+            </Button>
+          </div>
+          <div class="grid min-h-0 flex-1 gap-3 overflow-auto p-4">
+            <div class="flex flex-wrap items-end gap-2">
+              <label v-if="interchangeMode === 'import'" class="grid min-w-[220px] gap-1.5 text-xs font-medium">
+                导入格式
+                <select v-model="importFormat" class="h-9 rounded-md border border-input bg-background px-2 text-sm font-normal">
+                  <option value="curl">
+                    cURL
+                  </option>
+                  <option value="postman">
+                    Postman Collection 2.1
+                  </option>
+                  <option value="openapi">
+                    OpenAPI JSON / YAML
+                  </option>
+                </select>
+              </label>
+              <label v-else class="grid min-w-[220px] gap-1.5 text-xs font-medium">
+                导出格式
+                <select v-model="exportFormat" class="h-9 rounded-md border border-input bg-background px-2 text-sm font-normal">
+                  <option value="curl">
+                    cURL（当前请求）
+                  </option>
+                  <option value="postman">
+                    Postman Collection 2.1
+                  </option>
+                  <option value="openapi-json">
+                    OpenAPI JSON
+                  </option>
+                  <option value="openapi-yaml">
+                    OpenAPI YAML
+                  </option>
+                </select>
+              </label>
+              <Button v-if="interchangeMode === 'import'" type="button" size="sm" variant="outline" class="gap-2" @click="chooseInterchangeFile">
+                <FileUp class="size-4" />
+                选择文件
+              </Button>
+              <Button v-else type="button" size="sm" variant="outline" class="gap-2" @click="copyInterchangeExport">
+                <Copy class="size-4" />
+                复制
+              </Button>
+            </div>
+            <textarea
+              v-if="interchangeMode === 'import'"
+              v-model="interchangeContent"
+              data-testid="interchange-input"
+              rows="16"
+              class="min-h-[280px] w-full resize-y rounded-md border border-input bg-background p-3 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              placeholder="粘贴 cURL 命令、Postman Collection JSON 或 OpenAPI JSON / YAML"
+            />
+            <textarea
+              v-else
+              :value="interchangeExportPreview"
+              data-testid="interchange-output"
+              readonly
+              rows="16"
+              class="min-h-[280px] w-full resize-y rounded-md border border-input bg-muted/30 p-3 font-mono text-xs outline-none"
+            />
+            <p v-if="interchangeError" class="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              {{ interchangeError }}
+            </p>
+          </div>
+          <div class="flex justify-end gap-2 border-t border-border px-4 py-3">
+            <Button type="button" size="sm" variant="outline" :disabled="interchangeBusy" @click="closeInterchangeDialog">
+              取消
+            </Button>
+            <Button
+              v-if="interchangeMode === 'import'"
+              type="button"
+              size="sm"
+              class="gap-2"
+              :disabled="interchangeBusy || !interchangeContent.trim()"
+              @click="runInterchangeImport"
+            >
+              <FileUp class="size-4" />
+              {{ interchangeBusy ? '导入中…' : '导入到本地集合' }}
+            </Button>
+            <Button v-else type="button" size="sm" class="gap-2" :disabled="interchangeBusy" @click="saveInterchangeExport">
+              <Download class="size-4" />
+              {{ interchangeBusy ? '导出中…' : '保存文件' }}
             </Button>
           </div>
         </section>
